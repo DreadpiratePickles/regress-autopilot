@@ -20,10 +20,19 @@ DEMO_WORKLOAD = REPO_ROOT / "workloads" / "demo_quota_v1.jsonl"
 TOP_RUNG_FREE_TIER_DAILY_LIMIT = 20
 """`gemini-3.6-flash`, observed on 2026-09-02. See docs/design.md §9."""
 
-CRITERIA_PER_REQUEST = 3
-JUDGE_CALLS_PER_SAMPLED = CRITERIA_PER_REQUEST * 2 + 2
-"""Each criterion is judged on both answers, and the pair is judged in both
-orders: 3 x 2 + 2 = 8 judge calls per sampled record."""
+CHEAP_RUNG_FREE_TIER_DAILY_LIMIT = 500
+"""`gemini-3.5-flash-lite`, observed on 2026-09-02. See docs/design.md §9."""
+
+
+def judge_calls_for(criteria_count: int) -> int:
+    """Judge calls one sampled record costs: `2 x criteria + 2`.
+
+    Each criterion is judged on the cheap answer and on the reference answer
+    separately, and the pair is judged in both orders. Derived rather than
+    hard-coded because this workload is not uniform: nine requests carry three
+    criteria and three carry four, so a fixed 8 would understate the bill.
+    """
+    return 2 * criteria_count + 2
 
 
 class TestDemoConfiguration:
@@ -86,9 +95,12 @@ class TestDemoWorkload:
                 f"at score {result.complexity_score}"
             )
 
-    def test_every_request_carries_the_criteria_the_budget_assumes(self):
+    def test_every_request_carries_criteria_so_both_judges_run(self):
+        """The budget is summed from these counts rather than assuming a fixed
+        number, but a request carrying none would skip criteria judging
+        altogether and the demo would exercise only the pairwise judge."""
         for request in load_workload(DEMO_WORKLOAD):
-            assert len(request.criteria) >= CRITERIA_PER_REQUEST, request.id
+            assert request.criteria, request.id
 
     def test_at_least_one_criterion_per_request_is_negative(self):
         """A negative criterion is the strongest regret detector, because the most
@@ -104,35 +116,67 @@ class TestCallBudget:
     """The arithmetic `docs/runbook-live-demo.md` publishes, asserted."""
 
     def _split(self):
+        """Split the workload by where the ladder starts each request.
+
+        Only a request that starts below the top rung can be cheap-routed, and
+        only a cheap-routed request can be shadow-sampled, so this split is
+        exactly the set that can cost a reference call and a judge call.
+        """
         config = load_config(DEMO_CONFIG)
-        cheap = sum(
-            1
-            for request in load_workload(DEMO_WORKLOAD)
-            if config.ladder.first_capable_index(request.expected_tier)
-            < config.ladder.top_rung.index
-        )
-        return config, cheap, 12 - cheap
+        cheap, top = [], []
+        for request in load_workload(DEMO_WORKLOAD):
+            starts_below_top = (
+                config.ladder.first_capable_index(request.expected_tier)
+                < config.ladder.top_rung.index
+            )
+            (cheap if starts_below_top else top).append(request)
+        return cheap, top
+
+    def _judge_calls(self) -> list[int]:
+        """What each cheap-routable request costs in judge calls, if sampled."""
+        cheap, _ = self._split()
+        return sorted(judge_calls_for(len(request.criteria)) for request in cheap)
 
     def test_ten_requests_route_cheap_and_two_route_to_the_top_rung(self):
-        _, cheap, top = self._split()
-        assert (cheap, top) == (10, 2)
+        cheap, top = self._split()
+        assert (len(cheap), len(top)) == (10, 2)
 
     def test_the_worst_case_stays_inside_the_top_rung_s_daily_allowance(self):
         """Routing costs 2 top-rung calls; validation costs 1 more per sampled
         record, and every one of the 10 cheap-routed requests could be sampled."""
-        _, cheap, top = self._split()
-        worst_case = top + cheap
+        cheap, top = self._split()
+        worst_case = len(top) + len(cheap)
         assert worst_case == 12
         assert worst_case <= TOP_RUNG_FREE_TIER_DAILY_LIMIT
         assert TOP_RUNG_FREE_TIER_DAILY_LIMIT - worst_case == 8, "headroom in the runbook"
 
-    def test_the_worst_case_cheap_rung_count_matches_the_runbook(self):
-        _, cheap, _ = self._split()
-        assert cheap + cheap * JUDGE_CALLS_PER_SAMPLED == 90
+    def test_the_worst_case_stays_inside_the_cheap_rung_s_daily_allowance(self):
+        """Routing costs one cheap-rung call each; validation adds this
+        workload's own `2 x criteria + 2` per sampled record, summed rather than
+        assumed, because three of the ten carry four criteria and not three."""
+        cheap, _ = self._split()
+        worst_case = len(cheap) + sum(self._judge_calls())
+        assert worst_case == 92
+        assert worst_case <= CHEAP_RUNG_FREE_TIER_DAILY_LIMIT
+        assert CHEAP_RUNG_FREE_TIER_DAILY_LIMIT - worst_case == 408, "headroom in the runbook"
 
-    def test_the_expected_case_matches_the_runbook(self):
-        """Half of ten sampled: 7 top-rung calls and 50 cheap-rung calls."""
-        _, cheap, top = self._split()
-        sampled = cheap // 2
-        assert top + sampled == 7
-        assert cheap + sampled * JUDGE_CALLS_PER_SAMPLED == 50
+    def test_the_worst_case_total_call_count_matches_the_runbook(self):
+        cheap, top = self._split()
+        top_rung = len(top) + len(cheap)
+        cheap_rung = len(cheap) + sum(self._judge_calls())
+        assert top_rung + cheap_rung == 104
+
+    def test_the_expected_case_is_a_range_because_the_criteria_are_not_uniform(self):
+        """Half of ten sampled is 7 top-rung calls, but which five are sampled is
+        a hash of a uuid4 request id, and a four-criterion request costs two judge
+        calls more than a three-criterion one. So the cheap-rung figure is a range
+        and the runbook publishes it as one."""
+        cheap, top = self._split()
+        sampled = len(cheap) // 2
+        assert len(top) + sampled == 7
+
+        per_record = self._judge_calls()
+        cheapest = len(cheap) + sum(per_record[:sampled])
+        dearest = len(cheap) + sum(per_record[-sampled:])
+        assert (cheapest, dearest) == (50, 52)
+        assert dearest <= CHEAP_RUNG_FREE_TIER_DAILY_LIMIT

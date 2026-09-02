@@ -152,7 +152,9 @@ class LedgerStore:
 
         This is the number the budget check reads, so it counts only rows that
         actually cost money. A refusal costs nothing by construction, and a
-        failed row carries whatever the failed attempts consumed.
+        `failed` row always records zero usage and zero cost: a provider error
+        carries no usage block, so no token count survives it and there is
+        nothing to charge. See docs/design.md §7 for what that understates.
         """
         return sum(row.cost_micro_usd for row in self.iter_month(month) if row.team_id == team_id)
 

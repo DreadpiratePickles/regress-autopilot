@@ -216,6 +216,15 @@ and none may decay into another. The row count is the request count, not the
 success count — which is what makes a month with a suspiciously good saving
 legible as "half of it was refused".
 
+**What a `failed` row costs, and where that understates spend.** Zero, always: a
+provider error carries no usage block, so no token count survives it and the row
+records zero input tokens, zero output tokens and zero cost. That is the only
+honest thing to write down from what the adapter is handed — but it understates
+the month where a vendor bills for an unusable reply, such as a response that
+generated output tokens and then failed validation or was cancelled mid-stream.
+The ledger's spend figure is therefore a floor on those rows, not a total, and
+the `failed` count printed beside it is the signal that the floor may be loose.
+
 **Why the request text is not stored by default.** A ledger is read by finance
 and operations people, copied into spreadsheets, and kept for years. Customer
 text does not belong in it. Rows carry a SHA-256 instead, which is enough for
@@ -404,6 +413,8 @@ is visible on screen; and the config file says so at `min_samples`, with the
 arithmetic and the two ways to fix it. Anyone whose deployment lives in that band
 should raise `min_samples` toward 35.
 
+*(Superseded by §23: the fourth verdict was added in Phase C.)*
+
 ---
 
 ## 14. Shadow sampling, and why it is a hash
@@ -412,10 +423,12 @@ should raise `min_samples` toward 35.
 router keeps the request, the answer and the workload's criteria in
 `shadow/<YYYY-MM>.jsonl` when `sha256(request_id) mod 100 < sample_percent`.
 
-**Why sample at all.** Validating every request costs about one top-rung call
-plus four judge calls per request — several times the spend the routing saved.
-A tool whose measurement costs more than the thing it measures is a tool nobody
-runs. `sample_percent` is directly a bill, and it is in the config file rather
+**Why sample at all.** Validating every request costs one top-rung call plus
+`2 × criteria + 2` judge calls per request — each criterion judged on both
+answers, and the pair judged in both orders, so 8 judge calls for a 3-criterion
+request and 2 for one with no criteria. That is several times the spend the
+routing saved. A tool whose measurement costs more than the thing it measures is
+a tool nobody runs. `sample_percent` is directly a bill, and it is in the config file rather
 than the code so that it is a reviewed number.
 
 **Why a hash and not a random draw.** Three reasons, and the third is the one
@@ -823,8 +836,9 @@ that no live regret figure exists.
 
 **Decision.** `autopilot.demo.toml`: a two-rung ladder, Flash-Lite → Flash, with
 Flash as the top rung, plus `workloads/demo_quota_v1.jsonl` — 12 requests, 5 T1,
-5 T2, 2 T3, three criteria each — sized so the whole run fits in **12 calls to
-Flash against a 20-per-day allowance**, worst case. The budget is computed in
+5 T2, 2 T3, three criteria each except `d10`–`d12`, which carry four — sized so
+the whole run fits in **12 calls to Flash against a 20-per-day allowance** and 92
+against Flash-Lite's 500, worst case. The budget is computed in
 `docs/runbook-live-demo.md` and asserted in `tests/test_demo_config.py`, because a
 runbook whose arithmetic has gone stale will make somebody burn a day's quota on
 its word.

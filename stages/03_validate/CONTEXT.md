@@ -90,7 +90,7 @@ text-free whether validation is on or off.
 
 ## Verify
 
-- `uv run pytest -q` — 776 tests, none touching the network. The paths that
+- `uv run pytest -q` — 780 tests, none touching the network. The paths that
   matter here are covered directly: deterministic sampling (same id, same
   decision; the rate over 1,000 synthetic ids); a shadow record written only for
   a successful non-top-rung answer and only when `enabled`; request text never
@@ -98,7 +98,7 @@ text-free whether validation is on or off.
   three missing-verdict states; a parse failure recorded as a judge error rather
   than a failed criterion; exact regret counts and Wilson bounds against the same
   function recomputed in the test; an idempotent re-run adding no duplicates;
-  `--limit`; and the three tier verdict lines asserted as exact strings.
+  `--limit`; and the four tier verdict lines asserted as exact strings.
 - `uv run ruff check .` — clean at line-length 100.
 - `uv run python scripts/autopilot.py validate --dry-run` — exits 0, makes no
   network call, and prints that every verdict below it is a constant.
@@ -128,8 +128,10 @@ text-free whether validation is on or off.
   a deployment that may not retain such text should set it to `false` and read
   `ledger summary` knowing it reports spend with the quality question open.
 - **Spending is gated** the way stage 02's is: `--dry-run` absent and a key
-  present. Validation costs roughly one top-rung call plus four judge calls per
-  sampled request; `sample_percent` is directly a bill.
+  present. Validation costs one top-rung call plus `2 × criteria + 2` judge calls
+  per sampled request — each criterion judged on both answers, the pair judged in
+  both orders, so 8 judge calls for a 3-criterion request and 2 for one with no
+  criteria; `sample_percent` is directly a bill.
 
 **No creator grades its own work.** Stage 02 produced the cheap answers and this
 stage did not. But the judge is a real weakness and is named rather than hidden:

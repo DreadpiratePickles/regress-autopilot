@@ -69,10 +69,12 @@ def summarise(
 ) -> MonthSummary:
     """Total one month's rows.
 
-    Spend is summed over every row, so a failed attempt that still consumed
-    tokens is counted. Counterfactual is summed only where there is a real
-    completion to compare against, which keeps the saving from being inflated by
-    rows where nothing was produced.
+    Spend is summed over every row, but a `failed` row always records zero usage
+    and zero cost — a provider error carries no usage block, so no token count
+    survives it — which means failed attempts contribute nothing to spend. See
+    docs/design.md §7 for what that understates. Counterfactual is summed only
+    where there is a real completion to compare against, which keeps the saving
+    from being inflated by rows where nothing was produced.
     """
     spend_by_team: Counter[str] = Counter()
     spend_by_model: Counter[str] = Counter()

@@ -42,33 +42,49 @@ window opens then, not 24 hours from your last call.
 ## 2. The call budget, computed
 
 The workload is [`workloads/demo_quota_v1.jsonl`](../workloads/demo_quota_v1.jsonl):
-**12 requests — 5 T1, 5 T2, 2 T3**, each with 3 plain-English criteria. With the
-demo ladder, T1 and T2 start on rung 0 and T3 starts on rung 1.
+**12 requests — 5 T1, 5 T2, 2 T3**, with 3 plain-English criteria each except
+`d10`, `d11` and `d12`, which carry 4. With the demo ladder, T1 and T2 start on
+rung 0 and T3 starts on rung 1.
 
 ### Where each call goes
+
+A sampled record costs `2 × criteria + 2` judge calls: each criterion judged on
+the cheap answer and on the reference answer, then the pair judged in both
+orders. That is **8** for a 3-criterion request and **10** for a 4-criterion one,
+so the cheap-rung total is a sum over the sampled records, not a multiplication.
 
 | Stage | Rung 1 — `gemini-3.6-flash` | Rung 0 — `gemini-3.5-flash-lite` |
 |---|---:|---:|
 | `route` — 10 T1/T2 requests | 0 | 10 |
 | `route` — 2 T3 requests | 2 | 0 |
 | `validate` — one reference answer per sampled record | 1 per sampled | 0 |
-| `validate` — criteria judging, 3 criteria × 2 answers | 0 | 6 per sampled |
+| `validate` — criteria judging, criteria × 2 answers | 0 | 6 or 8 per sampled |
 | `validate` — pairwise, both orders | 0 | 2 per sampled |
-| **Per sampled record** | **1** | **8** |
+| **Per sampled record** | **1** | **8 or 10** |
+
+Only the 10 cheap-routed requests can be sampled, and nine of those carry 3
+criteria while `d10` carries 4 — so validating all ten costs
+`9 × 8 + 10 = 82` judge calls.
 
 `sample_percent = 50` and the sampling rule is `sha256(request_id) mod 100 < 50`
-over a uuid4 request id, so the number sampled out of the 10 cheap-routed
-requests is not fixed. Both cases are budgeted:
+over a uuid4 request id, so neither *how many* nor *which* of the 10 cheap-routed
+requests get sampled is fixed. Both cases are budgeted:
 
 | | Sampled records | Flash calls | Flash-Lite calls |
 |---|---:|---:|---:|
-| **Expected** (half of 10) | 5 | 2 + 5 = **7** | 10 + 40 = **50** |
-| **Worst case** (all 10) | 10 | 2 + 10 = **12** | 10 + 80 = **90** |
+| **Expected** (half of 10) | 5 | 2 + 5 = **7** | 10 + 40…42 = **50–52** |
+| **Worst case** (all 10) | 10 | 2 + 10 = **12** | 10 + 82 = **92** |
 | Free-tier daily limit | | **20** | **500** |
-| Headroom, worst case | | 8 | 410 |
+| Headroom, worst case | | 8 | 408 |
 
-**12 of 20 Flash calls, worst case.** That is the number the workload was sized
-against. `report` makes no model call at all, in either mode.
+The expected case is a range because which five records are sampled decides
+whether `d10`'s extra pair of judge calls is included.
+
+**12 of 20 Flash calls and 92 of 500 Flash-Lite calls, worst case — 104 calls in
+total.** That is the number the workload was sized against, and
+`tests/test_demo_config.py` recomputes it from the workload and the demo ladder
+rather than trusting this table. `report` makes no model call at all, in either
+mode.
 
 If you have already spent some of today's Flash allowance, subtract it before
 starting: 12 more calls need 12 free.
@@ -93,7 +109,7 @@ uv run python scripts/autopilot.py --config autopilot.demo.toml \
 # 2. Totals so far. No model call.
 uv run python scripts/autopilot.py --config autopilot.demo.toml ledger summary
 
-# 3. Validate the shadow sample. 1 Flash + 8 Flash-Lite calls per sampled record.
+# 3. Validate the shadow sample. 1 Flash + 8 or 10 Flash-Lite calls per sampled record.
 uv run python scripts/autopilot.py --config autopilot.demo.toml \
   validate --min-interval-ms 6500
 
@@ -106,7 +122,7 @@ uv run python scripts/autopilot.py --config autopilot.demo.toml report
 `autopilot.demo.toml`, so the flag is belt and braces; pass it anyway, because a
 future edit to the file should not silently un-pace a live run.
 
-**Expect it to be slow.** At 6500 ms between calls, the worst case — 102 calls —
+**Expect it to be slow.** At 6500 ms between calls, the worst case — 104 calls —
 is about eleven minutes of wall clock. That is the point: the pacing is what
 keeps the run from turning into a wall of 429s.
 

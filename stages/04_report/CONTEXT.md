@@ -94,7 +94,7 @@ to send a person, and collapsing them would make CI unable to distinguish them.
 
 ## Verify
 
-- `uv run pytest -q` — 776 tests, none touching the network. The paths that
+- `uv run pytest -q` — 780 tests, none touching the network. The paths that
   matter here are covered directly: the four verdict wordings as exact strings;
   `clean_samples_needed` asserted to be the *smallest* n whose Wilson upper bound
   at zero regret clears the threshold, at five different thresholds, and `None`

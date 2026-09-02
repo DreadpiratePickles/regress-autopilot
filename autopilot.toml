@@ -147,9 +147,12 @@ enabled = true
 # Percentage of cheap-routed requests to keep, 0-100. Sampling is
 # `sha256(request_id) mod 100 < sample_percent`, so the same request is always
 # sampled or always skipped and raising the number can only add requests to the
-# sample. Validation costs roughly one top-rung call plus four judge calls per
-# sampled request, so this number is directly a bill: 20 means the quality
-# measurement costs about a fifth of what validating everything would.
+# sample. Validation costs one top-rung call plus `2 x criteria + 2` judge calls
+# per sampled request — each criterion is judged on both answers, and the pair is
+# judged in both orders, so a 3-criterion request costs 8 judge calls and a
+# request with no criteria costs 2. This number is therefore directly a bill: 20
+# means the quality measurement costs about a fifth of what validating everything
+# would.
 sample_percent = 20
 
 # Which model judges. Named by reference, like a ladder rung, so no model id
@@ -176,11 +179,14 @@ max_regret = 0.10
 # SHARP EDGE, because it will surprise somebody: 10 is not enough samples to ever
 # reach "safe" at max_regret = 0.10. Even with zero regret observed, the 95%
 # upper bound only falls below 0.10 at roughly n = 35. Between min_samples and
-# that point a tier reports "regret too high" while its observed rate is zero —
-# which is literally true (the bound is above the threshold) but reads as an
-# accusation. The rate and the bound are both printed on the line above, so the
-# distinction is visible; raise min_samples toward 35, or raise max_regret, if
-# you would rather the verdict said "not enough evidence" for that whole range.
+# that point a tier has enough samples to escape "insufficient evidence" but not
+# enough for a zero rate to clear the threshold, so it reports the fourth
+# verdict: "no regret observed (n=...); interval too wide — need ~N more clean
+# samples". That is a statement about the sample size, not an accusation against
+# the routing, and N is computed from max_regret rather than hard-coded — a
+# deployment at 0.20 needs only 16 clean samples, one at 0.05 needs 73. Raise
+# min_samples toward 35, or raise max_regret, if you would rather the verdict
+# said "not enough evidence" for that whole range. See docs/design.md §23.
 min_samples = 10
 
 # Both relative to this file, and both gitignored: per-deployment operational

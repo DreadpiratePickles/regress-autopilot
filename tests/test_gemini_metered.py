@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from google.genai import errors as genai_errors
 
+from cost_autopilot.providers import gemini_metered
 from cost_autopilot.providers.gemini_metered import (
     GeminiMeteredProvider,
     gemini_metered_provider_from_env,
@@ -187,6 +188,17 @@ class TestErrorClassification:
         with pytest.raises(ProviderTransientError, match="after 3 attempts"):
             provider.complete(system="s", user="u", temperature=0.0)
         assert len(provider._client.models.calls) == 3
+
+    def test_a_retry_loop_that_never_ran_raises_instead_of_asserting(self, monkeypatch):
+        """`MAX_ATTEMPTS < 1` leaves the loop with nothing to report. That was a
+        bare `assert`, which `python -O` strips — and a stripped assertion here
+        would raise `TypeError` deep inside a message format instead of naming
+        the broken constant. It is a typed config error now."""
+        monkeypatch.setattr(gemini_metered, "MAX_ATTEMPTS", 0)
+        provider = build(response())
+        with pytest.raises(ProviderConfigError, match="MAX_ATTEMPTS"):
+            provider.complete(system="s", user="u", temperature=0.0)
+        assert provider._client.models.calls == []
 
     def test_no_error_message_contains_a_credential(self):
         provider = build(self.make_api_error(403))

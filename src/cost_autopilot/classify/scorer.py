@@ -221,7 +221,9 @@ def score_features(features: RequestFeatures) -> tuple[int, tuple[str, ...]]:
 
     clamped = max(MIN_SCORE, min(MAX_SCORE, raw_total))
     if clamped != raw_total:
-        reasons.append(f"clamped from {raw_total} to {clamped} (+{clamped - raw_total})")
+        # `:+d` rather than a literal '+', because a clamp's delta is negative
+        # and prefixing one produced `(+-14)`.
+        reasons.append(f"clamped from {raw_total} to {clamped} ({clamped - raw_total:+d})")
     return clamped, tuple(reasons)
 
 

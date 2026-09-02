@@ -179,9 +179,10 @@ def tier_verdict_line(group: RegretGroup, *, max_regret: float, min_samples: int
                 f"no sample size brings the 95% upper bound below max_regret "
                 f"{max_regret:.3f}"
             )
+        shortfall = max(1, needed - group.n)
         return (
             f"{VERDICT_NO_REGRET_OBSERVED} (n={group.n}); interval too wide — "
-            f"need ~{max(1, needed - group.n)} more clean samples "
+            f"need ~{shortfall} more clean sample{'' if shortfall == 1 else 's'} "
             f"(95% upper bound {group.wilson_high:.3f}, max_regret {max_regret:.3f})"
         )
     return (

@@ -129,11 +129,19 @@ class TestVerdictLine:
         assert "routing this tier up" not in line
 
     def test_the_shortfall_is_needed_minus_n(self):
-        for n in (10, 20, 34):
+        for n in (10, 20, 33):
             line = tier_verdict_line(
                 group(n=n, regret_count=0), max_regret=0.10, min_samples=10
             )
             assert f"need ~{35 - n} more clean samples" in line
+
+    def test_a_shortfall_of_one_says_sample_not_samples(self):
+        """n = 34 is one short of the 35 a zero rate needs at max_regret = 0.10,
+        and "1 more clean samples" is the kind of wording that makes a reader
+        distrust the arithmetic next to it."""
+        line = tier_verdict_line(group(n=34, regret_count=0), max_regret=0.10, min_samples=10)
+        assert "need ~1 more clean sample (" in line
+        assert "clean samples" not in line
 
     def test_an_unreachable_threshold_says_so_rather_than_quoting_a_number(self):
         line = tier_verdict_line(group(n=12, regret_count=0), max_regret=0.0, min_samples=10)

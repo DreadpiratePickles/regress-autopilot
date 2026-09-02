@@ -22,6 +22,18 @@ from cost_autopilot.classify.scorer import (
 
 DEFAULTS = ScorerThresholds(t2_min_score=15, t3_min_score=45)
 
+CLAMPING_TEXT = (
+    "Debug, analyze, design and optimize this step by step. "
+    "It must not fail, must be at most 3 lines, and must handle errors.\n"
+    "```python\nraise ValueError\n```\n"
+    'Traceback (most recent call last):\n  File "a.py", line 1\n'
+    "| a | b |\n| 1 | 2 |\n"
+    "- one\n- two\n- three\n"
+    "Why? How? When? " + "word " * 400
+)
+"""Enough signals firing at once that the raw total runs past `MAX_SCORE`, which
+is the only way to see a clamp reason."""
+
 
 class TestTierEnum:
     def test_has_exactly_three_tiers(self):
@@ -91,16 +103,7 @@ class TestScoreBounds:
         assert result.complexity_score >= MIN_SCORE
 
     def test_score_never_above_one_hundred(self):
-        text = (
-            "Debug, analyze, design and optimize this step by step. "
-            "It must not fail, must be at most 3 lines, and must handle errors.\n"
-            "```python\nraise ValueError\n```\n"
-            'Traceback (most recent call last):\n  File "a.py", line 1\n'
-            "| a | b |\n| 1 | 2 |\n"
-            "- one\n- two\n- three\n"
-            "Why? How? When? " + "word " * 400
-        )
-        result = classify_text(text, DEFAULTS)
+        result = classify_text(CLAMPING_TEXT, DEFAULTS)
         assert result.complexity_score == MAX_SCORE
         assert result.tier is Tier.T3_COMPLEX
 
@@ -169,6 +172,21 @@ class TestReasons:
         result = classify_text("Summarize this.", DEFAULTS)
         assert isinstance(result.reasons, tuple)
         assert all(isinstance(reason, str) for reason in result.reasons)
+
+    def test_a_clamp_reason_carries_exactly_one_sign(self):
+        """A clamp's delta is negative by construction, so it already has a sign.
+        Prefixing another produced `(+-14)`, which reads as a typo."""
+        result = classify_text(CLAMPING_TEXT, DEFAULTS)
+        clamps = [reason for reason in result.reasons if reason.startswith("clamped from ")]
+        assert len(clamps) == 1
+        assert "+-" not in clamps[0]
+
+        raw_total = sum(
+            int(reason.rsplit("+", 1)[1].rstrip(")"))
+            for reason in result.reasons
+            if reason is not clamps[0]
+        )
+        assert clamps[0] == f"clamped from {raw_total} to {MAX_SCORE} ({MAX_SCORE - raw_total})"
 
     def test_the_weights_in_the_reasons_sum_to_the_score(self):
         text = "Debug this table:\n| a | b |\n| 1 | 2 |\nIt must not crash."

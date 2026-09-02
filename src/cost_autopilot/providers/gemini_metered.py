@@ -110,7 +110,16 @@ class GeminiMeteredProvider:
             if attempt < MAX_ATTEMPTS - 1:
                 time.sleep(_sleep_seconds(attempt))
 
-        assert last_transient is not None  # only reachable after a transient failure
+        if last_transient is None:
+            # Unreachable while MAX_ATTEMPTS >= 1: every iteration either returns,
+            # raises, or records a transient failure. Raised rather than asserted
+            # because `python -O` strips assertions, and a stripped one here would
+            # surface as a TypeError inside the message below instead of naming
+            # the constant that is wrong.
+            raise ProviderConfigError(
+                f"MAX_ATTEMPTS must be at least 1, got {MAX_ATTEMPTS}: "
+                f"model {self.model_id} was never called."
+            )
         raise ProviderTransientError(
             f"Model {self.model_id} still failing after {MAX_ATTEMPTS} attempts: {last_transient}"
         ) from last_transient

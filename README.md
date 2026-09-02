@@ -6,7 +6,7 @@ enough.**
 [![ci](https://github.com/DreadpiratePickles/llm-cost-autopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/DreadpiratePickles/llm-cost-autopilot/actions/workflows/ci.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab)](.python-version)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![tests: 776](https://img.shields.io/badge/tests-776-brightgreen)](tests/)
+[![tests: 780](https://img.shields.io/badge/tests-780-brightgreen)](tests/)
 
 This is a cost router with a conscience. It scores each request's complexity with transparent rules, sends
 it to the cheapest rung of a model ladder that can serve it, refuses anything that would break a team's
@@ -248,7 +248,7 @@ uv run pytest -q
 uv run ruff check .
 ```
 
-776 tests, none of which touches the network. Then run the whole pipeline against canned providers — three
+780 tests, none of which touches the network. Then run the whole pipeline against canned providers — three
 commands, no key, no network, nothing spent:
 
 ```bash
@@ -282,7 +282,7 @@ all gitignored.
 |---|---|
 | `uv: command not found` | uv is not on your `PATH`. Re-open the shell, or see the [uv install docs](https://docs.astral.sh/uv/getting-started/installation/). |
 | `uv sync` fails resolving Python | Run `uv python install 3.12` first. |
-| `Configuration file not found` | You are not in the repository root, or need `--config <path>`. Every command accepts it. |
+| `Configuration file not found` | You are not in the repository root, or need `--config <path>`. It is a **global** option: it goes before the subcommand, as in `autopilot.py --config autopilot.demo.toml route ...`. After the subcommand argparse rejects it. |
 | `validate` says "No shadow records" | Nothing sampled yet. Run `route` first; check `[validate] enabled = true` and `sample_percent > 0`. |
 | `report` exits 2 | Not a failure. `INCONCLUSIVE` — too few comparisons. Exit **3** is the one that means the tool could not run. |
 | A live run errors about the API key | `.env` is missing, in the wrong directory, or the line is quoted. It must sit at the repository root and read exactly `GEMINI_API_KEY=...`. |
@@ -290,8 +290,9 @@ all gitignored.
 
 ## 🚀 Use it: a guided first session
 
-Six steps, in order. Commands that call a model are marked; every command accepts `--config <path>`, and the
-examples use the default `autopilot.toml`.
+Six steps, in order. Commands that call a model are marked. `--config <path>` is a **global** option and
+must come before the subcommand — `autopilot.py --config autopilot.demo.toml route ...`, never
+`route --config ...` — and the examples below use the default `autopilot.toml`.
 
 ### (a) Ask why a request would be routed the way it is
 
@@ -666,9 +667,11 @@ reversal.
 
 **Can I use OpenAI or Anthropic?** Not today, and the seam is honest about it. `providers/metered.py`
 defines a `MeteredProvider` protocol — `complete(system, user, temperature) -> Completion(text,
-input_tokens, output_tokens, model_id, latency_ms)` — plus four typed errors, and **nothing outside
-`src/cost_autopilot/providers/` names a vendor**. Adding one is a module implementing that protocol, a line
-in `build_provider_factory`, and a price table, which is already configuration. Only a Gemini adapter is
+input_tokens, output_tokens, model_id, latency_ms)` — plus four typed errors, and **no vendor SDK is
+imported outside `providers/`; model ids live only in `config.py`**. (Two places do still name a vendor
+without importing it: `config.py` holds the model ids, and `cli.py` names `gemini_metered_provider_from_env`
+when it wires the factory.) Adding one is a module implementing that protocol, a line in
+`build_provider_factory`, and a price table, which is already configuration. Only a Gemini adapter is
 written.
 
 **Does it send my data anywhere, or change my config on its own?** Neither. Requests go only to the provider
@@ -697,7 +700,7 @@ src/cost_autopilot/
   providers/                        the metered seam; the only package naming a vendor
   validate/                         sampling · shadow · pairwise · runner · regret · report
   report/                           model · build · rules · render · proposal · apply · run
-tests/                              776 tests; none touches the network
+tests/                              780 tests; none touches the network
 ledger/ shadow/ validate/ report/   per-deployment runtime data (gitignored)
 demo/                               everything autopilot.demo.toml writes (gitignored)
 ```
@@ -731,14 +734,14 @@ demo/                               everything autopilot.demo.toml writes (gitig
 
 ## 📈 Status and roadmap
 
-Verified locally, on this commit: **776 tests passing, 97% statement coverage, `ruff` clean**, and all four
+Verified locally, on this commit: **780 tests passing, 97% statement coverage, `ruff` clean**, and all four
 stages run end to end offline against canned providers.
 
 | | State |
 |---|---|
 | Stages 01–04, the ledger, the shadow sampler, both judges, the report and the proposal mechanism | Implemented and unit-tested |
 | The four stages end to end, offline | Verified — and it is what CI runs on every push |
-| Routing against live models | **Verified.** Two live runs, 2026-09-02: the shipped ladder (12 of 30 answered) and the quota-fit demo (4 of 12 answered). Both artifacts committed |
+| Routing against live models | **Verified.** Two live runs, 2026-09-02: the shipped ladder (12 of 30 answered) and the quota-fit demo (4 of 12 answered). The demo run's artifacts are committed as `docs/examples/*.live.*`; the shipped-ladder run's were not kept |
 | A live **regret figure** | **Never produced.** Both live runs ended with zero readable verdicts, because no reference answer could be obtained. `docs/examples/*.synthetic.*` is canned constants and says so |
 | The top rung, `gemini-3.1-pro-preview` | **Needs billing.** `429` with `limit: 0` on a free-tier key. The id is real; the entitlement is not |
 | CI (`.github/workflows/ci.yml`) | Written, pinned to action SHAs, needs no secret. **Not yet observed green on GitHub** — this repository has not been pushed |
