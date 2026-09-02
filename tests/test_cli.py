@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from cost_autopilot.cli import EXIT_BAD_CONFIG, EXIT_OK, EXIT_PARTIAL_FAILURE, main
+from cost_autopilot.ledger.store import month_key
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKLOAD = REPO_ROOT / "workloads" / "mixed_v1.jsonl"
@@ -246,8 +247,165 @@ class TestDryRunIsolation:
 
     def test_a_real_run_without_a_key_fails_before_writing_a_row(self, workspace, monkeypatch):
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
+        # The name has to be patched where it is *used*: `gemini_metered` did
+        # `from dotenv import load_dotenv`, so patching `dotenv.load_dotenv`
+        # rebinds a name nothing reads, and a real .env in the repository root
+        # would then supply the key this test is asserting the absence of.
+        monkeypatch.setattr(
+            "cost_autopilot.providers.gemini_metered.load_dotenv", lambda *a, **k: False
+        )
         code, echo = run(workspace, "route", "--team", "demo", "--text", "Hi")
         assert code == EXIT_BAD_CONFIG
         assert "GEMINI_API_KEY" in echo.text
         assert "error:" in echo.text
+
+
+def set_config(workspace, old, new):
+    path = workspace / "autopilot.toml"
+    path.write_text(path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+
+
+def route_everything(workspace):
+    """Route the demo workload with every cheap answer shadow-sampled."""
+    set_config(workspace, "sample_percent = 20", "sample_percent = 100")
+    return run(
+        workspace, "route", "--team", "demo", "--workload", str(WORKLOAD),
+        "--dry-run", "--min-interval-ms", "0",
+    )
+
+
+def shadow_records(workspace) -> list[dict]:
+    files = sorted((workspace / "shadow").glob("*.jsonl"))
+    return [
+        json.loads(line)
+        for path in files
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def verdict_records(workspace) -> list[dict]:
+    files = sorted((workspace / "validate").glob("*/verdicts.jsonl"))
+    return [
+        json.loads(line)
+        for path in files
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+class TestShadowSamplingThroughTheCli:
+    def test_routing_writes_a_shadow_record_for_every_cheap_answer(self, workspace):
+        route_everything(workspace)
+        rows = ledger_rows(workspace)
+        top = {row["chosen_model_id"] for row in rows} - {
+            record["chosen_model_id"] for record in shadow_records(workspace)
+        }
+        assert len(shadow_records(workspace)) == sum(
+            1 for row in rows if row["shadow_sampled"]
+        )
+        assert top, "the top rung must never be shadow-sampled"
+
+    def test_the_shadow_file_holds_the_text_and_the_ledger_does_not(self, workspace):
+        route_everything(workspace)
+        ledger_text = next(iter((workspace / "ledger").glob("*.jsonl"))).read_text("utf-8")
+        shadow_text = next(iter((workspace / "shadow").glob("*.jsonl"))).read_text("utf-8")
+        assert "capital of Peru" in shadow_text
+        assert "capital of Peru" not in ledger_text
+
+    def test_the_criteria_travel_from_the_workload_onto_the_record(self, workspace):
+        route_everything(workspace)
+        assert any(record["criteria"] for record in shadow_records(workspace))
+
+    def test_disabling_validation_writes_no_shadow_file_at_all(self, workspace):
+        set_config(workspace, "enabled = true", "enabled = false")
+        run(workspace, "route", "--team", "demo", "--text", "What is 2 + 2?", "--dry-run")
+        assert not (workspace / "shadow").exists()
+        assert ledger_rows(workspace)[0]["shadow_sampled"] is False
+
+
+class TestValidateCommand:
+    def test_a_dry_run_validates_every_shadow_record(self, workspace):
+        route_everything(workspace)
+        code, echo = run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        assert code == EXIT_OK
+        assert "Dry run" in echo.text
+        assert len(verdict_records(workspace)) == len(shadow_records(workspace))
+
+    def test_it_writes_a_regret_file_carrying_the_sampling_rule(self, workspace):
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        payload = json.loads(
+            (workspace / "validate" / month_key() / "regret.json").read_text(encoding="utf-8")
+        )
+        assert payload["sample_percent"] == 100
+        assert payload["cheap_routed_count"] == len(shadow_records(workspace))
+        assert isinstance(payload["validation_cost_micro_usd"], int)
+
+    def test_re_running_adds_no_duplicates(self, workspace):
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        first = len(verdict_records(workspace))
+        code, echo = run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        assert code == EXIT_OK
+        assert len(verdict_records(workspace)) == first
+        assert "0 newly validated" in echo.text
+
+    def test_limit_validates_only_the_first_n_records(self, workspace):
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0", "--limit", "3")
+        assert len(verdict_records(workspace)) == 3
+
+    def test_limit_then_a_full_run_completes_the_rest_without_duplicating(self, workspace):
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0", "--limit", "3")
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        ids = [record["request_id"] for record in verdict_records(workspace)]
+        assert len(ids) == len(set(ids)) == len(shadow_records(workspace))
+
+    def test_a_month_with_no_shadow_records_is_not_an_error(self, workspace):
+        code, echo = run(workspace, "validate", "--dry-run", "--month", "1999-01")
+        assert code == EXIT_OK
+        assert "No shadow records" in echo.text
+
+    def test_a_bad_month_is_rejected(self, workspace):
+        code, echo = run(workspace, "validate", "--dry-run", "--month", "sept")
+        assert code == EXIT_BAD_CONFIG
+        assert "YYYY-MM" in echo.text
+
+    def test_a_negative_limit_is_rejected(self, workspace):
+        route_everything(workspace)
+        code, _ = run(workspace, "validate", "--dry-run", "--limit", "-1")
+        assert code == EXIT_BAD_CONFIG
+
+
+class TestSummaryQualitySection:
+    def test_the_section_is_absent_until_a_month_has_been_validated(self, workspace):
+        route_everything(workspace)
+        _, echo = run(workspace, "ledger", "summary")
+        assert "Quality (from shadow validation)" not in echo.text
+
+    def test_the_section_appears_once_a_regret_file_exists(self, workspace):
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        code, echo = run(workspace, "ledger", "summary")
+        assert code == EXIT_OK
+        assert "Quality (from shadow validation)" in echo.text
+        assert "validation cost" in echo.text
+
+    def test_the_section_gives_a_verdict_line_per_tier(self, workspace):
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        _, echo = run(workspace, "ledger", "summary")
+        verdicts = ("safe:", "insufficient evidence:", "regret too high —")
+        tiers = [line for line in echo.lines if "T1_TRIVIAL" in line or "T2_STANDARD" in line]
+        assert tiers, "the quality section must break regret down by tier"
+        assert sum(echo.text.count(phrase) for phrase in verdicts) >= 1
+
+    def test_the_summary_never_rewrites_configuration(self, workspace):
+        before = (workspace / "autopilot.toml").read_text(encoding="utf-8")
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        run(workspace, "ledger", "summary")
+        after = (workspace / "autopilot.toml").read_text(encoding="utf-8")
+        assert after == before.replace("sample_percent = 20", "sample_percent = 100")

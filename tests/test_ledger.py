@@ -227,3 +227,67 @@ class TestTimeHelpers:
     def test_validate_month_key_rejects_anything_else(self, bad):
         with pytest.raises(LedgerError):
             validate_month_key(bad)
+
+
+class TestShadowSampledField:
+    """Version 2 added one flag, and one migration rule for the rows before it."""
+
+    def test_a_row_is_unsampled_by_default(self):
+        assert make_row().shadow_sampled is False
+
+    def test_a_sampled_row_says_so_in_json(self):
+        assert make_row(shadow_sampled=True).to_json_dict()["shadow_sampled"] is True
+
+    def test_shadow_sampled_must_be_a_boolean(self):
+        with pytest.raises(LedgerRowError):
+            make_row(shadow_sampled="yes")
+
+    def test_only_an_ok_row_can_be_shadow_sampled(self):
+        with pytest.raises(LedgerRowError):
+            make_row(
+                status=STATUS_REFUSED,
+                error_type="BudgetExceededError",
+                chosen_model_id=None,
+                cost_micro_usd=0,
+                shadow_sampled=True,
+            )
+
+    def test_a_version_one_row_reads_as_unsampled(self):
+        payload = make_row().to_json_dict()
+        del payload["shadow_sampled"]
+        payload["schema_version"] = 1
+        assert row_from_json_dict(payload).shadow_sampled is False
+
+    def test_a_version_one_row_keeps_the_rest_of_its_values(self):
+        payload = make_row(cost_micro_usd=4321).to_json_dict()
+        del payload["shadow_sampled"]
+        payload["schema_version"] = 1
+        assert row_from_json_dict(payload).cost_micro_usd == 4321
+
+    def test_a_version_this_build_has_never_heard_of_is_still_refused(self):
+        payload = make_row().to_json_dict()
+        payload["schema_version"] = SCHEMA_VERSION + 1
+        with pytest.raises(LedgerRowError):
+            row_from_json_dict(payload)
+
+
+class TestRowFieldValidation:
+    """The remaining boundary checks, each named after what it prevents."""
+
+    def test_a_blank_request_id_is_refused(self):
+        with pytest.raises(LedgerRowError):
+            make_row(request_id="   ")
+
+    def test_a_negative_token_count_is_refused(self):
+        with pytest.raises(LedgerRowError):
+            make_row(input_tokens=-1)
+
+    def test_a_currency_other_than_usd_is_refused(self):
+        with pytest.raises(LedgerRowError):
+            make_row(currency="EUR")
+
+    def test_reasons_must_be_a_list_of_strings_on_the_way_in(self):
+        payload = make_row().to_json_dict()
+        payload["reasons"] = [1, 2]
+        with pytest.raises(LedgerRowError):
+            row_from_json_dict(payload)

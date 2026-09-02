@@ -81,7 +81,9 @@ class TestConstruction:
 
     def test_from_env_without_a_key_is_a_config_error(self, monkeypatch):
         monkeypatch.delenv(API_KEY_ENV_VAR, raising=False)
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
+        monkeypatch.setattr(
+            "cost_autopilot.providers.gemini_metered.load_dotenv", lambda *a, **k: False
+        )
         with pytest.raises(ProviderConfigError, match=API_KEY_ENV_VAR):
             gemini_metered_provider_from_env("model-x")
 

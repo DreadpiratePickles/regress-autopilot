@@ -8,6 +8,11 @@ __pycache__/
 # matches `src/cost_autopilot/ledger/`, which would silently leave the ledger
 # source package out of every commit.
 /ledger/
+# Anchored for the same reason as /ledger/: unanchored, `validate/` would also
+# match `src/cost_autopilot/validate/` and leave stage 03's source uncommitted.
+# `shadow/` holds request text and answers; it must never be committed.
+/shadow/
+/validate/
 /runs/
 .DS_Store
 .coverage

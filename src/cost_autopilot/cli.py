@@ -1,4 +1,4 @@
-"""The command line: `classify`, `route`, and `ledger summary`.
+"""The command line: `classify`, `route`, `validate`, and `ledger summary`.
 
 The logic lives in the packages this imports; this module only wires arguments
 to it and turns outcomes into exit codes and printed text, so the test suite can
@@ -29,6 +29,12 @@ from .ledger.summary import render, summarise
 from .providers.fake_metered import FakeProviderFactory
 from .providers.metered import MeteredProvider, ProviderError
 from .route.router import ProviderFactory, Router, RoutingError
+from .validate.dry_run import DryRunJudgeFactory
+from .validate.regret import RegretError
+from .validate.report import load_report, render_quality
+from .validate.run import run_validation
+from .validate.shadow import ShadowError, ShadowStore
+from .validate.verdicts import VerdictError, VerdictStore
 from .workload import WorkloadError, load_workload
 
 EXIT_OK = 0
@@ -78,6 +84,8 @@ def build_router(config: AutopilotConfig, *, dry_run: bool, store: LedgerStore) 
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         log_text=config.ledger.log_text,
         temperature=config.run.temperature,
+        shadow_enabled=config.validate.enabled,
+        shadow_sample_percent=config.validate.sample_percent,
     )
 
 
@@ -106,10 +114,25 @@ def command_classify(args: argparse.Namespace, echo: Callable[[str], None]) -> i
 
 
 def _route_one(
-    router: Router, store: LedgerStore, *, text: str, team_id: str
+    router: Router,
+    store: LedgerStore,
+    shadow: ShadowStore,
+    *,
+    text: str,
+    team_id: str,
+    criteria: tuple[str, ...] = (),
 ) -> LedgerRow:
-    outcome = router.route(text=text, team_id=team_id)
+    """Route one request and persist what it produced, ledger row first.
+
+    The row is the authoritative record and is written before the shadow record,
+    so a shadow write that fails leaves the ledger complete and loses only the
+    evidence for one validation — never the accounting for a call that was paid
+    for.
+    """
+    outcome = router.route(text=text, team_id=team_id, criteria=criteria)
     store.append(outcome.row)
+    if outcome.shadow_record is not None:
+        shadow.append(outcome.shadow_record)
     return outcome.row
 
 
@@ -117,22 +140,28 @@ def command_route(args: argparse.Namespace, echo: Callable[[str], None]) -> int:
     """Route one request or a whole workload, appending one ledger row each."""
     config = load_config(args.config)
     store = LedgerStore(config.ledger.directory)
+    shadow = ShadowStore(config.validate.shadow_directory)
     router = build_router(config, dry_run=args.dry_run, store=store)
 
     if not config.ladder.prices_verified:
         echo("WARNING: prices_verified is false; recorded costs are placeholders.")
     if args.dry_run:
         echo("Dry run: using fakes, no network call will be made.")
+    if config.validate.enabled and config.validate.sample_percent > 0:
+        echo(
+            f"Shadow sampling {config.validate.sample_percent}% of cheap answers into "
+            f"{config.validate.shadow_directory}: this stores request text."
+        )
 
     interval_ms = validate_interval(
         args.min_interval_ms if args.min_interval_ms is not None else config.run.min_interval_ms
     )
 
     if args.workload:
-        return _route_workload(args, router, store, echo=echo, interval_ms=interval_ms)
+        return _route_workload(args, router, store, shadow, echo=echo, interval_ms=interval_ms)
 
     text = args.text if args.text is not None else Path(args.file).read_text(encoding="utf-8")
-    row = _route_one(router, store, text=text, team_id=args.team)
+    row = _route_one(router, store, shadow, text=text, team_id=args.team)
     _print_row(row, label="", echo=echo)
     return EXIT_OK if row.status == STATUS_OK else EXIT_PARTIAL_FAILURE
 
@@ -141,6 +170,7 @@ def _route_workload(
     args: argparse.Namespace,
     router: Router,
     store: LedgerStore,
+    shadow: ShadowStore,
     *,
     echo: Callable[[str], None],
     interval_ms: int,
@@ -155,8 +185,10 @@ def _route_workload(
         row = _route_one(
             router,
             store,
+            shadow,
             text=request.text,
             team_id=request.team_id or args.team,
+            criteria=request.criteria,
         )
         statuses.append(row.status)
         _print_row(row, label=f"[{position:>2}/{len(requests)}] {request.id:<28}", echo=echo)
@@ -167,13 +199,50 @@ def _route_workload(
     return EXIT_OK if ok == len(statuses) else EXIT_PARTIAL_FAILURE
 
 
+def command_validate(args: argparse.Namespace, echo: Callable[[str], None]) -> int:
+    """Re-answer the month's shadow sample on the top rung and judge both answers."""
+    config = load_config(args.config)
+    month = validate_month_key(args.month) if args.month else month_key()
+
+    if args.limit is not None and args.limit < 0:
+        raise ValueError(f"--limit must not be negative, got {args.limit}")
+    if args.dry_run:
+        echo("Dry run: using fakes. Every verdict below is a constant, not a judgement.")
+
+    interval_ms = validate_interval(
+        args.min_interval_ms if args.min_interval_ms is not None else config.run.min_interval_ms
+    )
+    factory: ProviderFactory = (
+        DryRunJudgeFactory() if args.dry_run else build_provider_factory(dry_run=False)
+    )
+    return run_validation(
+        config,
+        factory,
+        month=month,
+        interval_ms=interval_ms,
+        limit=args.limit,
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        echo=echo,
+    )
+
+
 def command_ledger_summary(args: argparse.Namespace, echo: Callable[[str], None]) -> int:
-    """Total one month of ledger rows and print the table."""
+    """Total one month of ledger rows and print the table, plus quality if measured."""
     config = load_config(args.config)
     store = LedgerStore(config.ledger.directory)
     month = validate_month_key(args.month) if args.month else month_key()
     rows = store.read_month(month)
     echo(render(summarise(rows, month=month, prices_verified=config.ladder.prices_verified)))
+
+    report = load_report(VerdictStore(config.validate.directory).regret_path(month))
+    if report is not None:
+        echo(
+            render_quality(
+                report,
+                max_regret=config.validate.max_regret,
+                min_samples=config.validate.min_samples,
+            )
+        )
     return EXIT_OK
 
 
@@ -212,6 +281,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum gap between model calls. Overrides [run] min_interval_ms.",
     )
 
+    validate = subparsers.add_parser(
+        "validate",
+        help="Re-answer the shadow sample on the top rung, judge both, report regret.",
+    )
+    validate.add_argument("--month", default=None, help="YYYY-MM (default: the current UTC month).")
+    validate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Use fakes. Makes no network call and produces synthetic verdicts.",
+    )
+    validate.add_argument(
+        "--min-interval-ms",
+        type=int,
+        default=None,
+        help="Minimum gap between model calls. Overrides [run] min_interval_ms.",
+    )
+    validate.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Validate at most this many records this run. The rest stay resumable.",
+    )
+
     ledger = subparsers.add_parser("ledger", help="Read the ledger.")
     ledger_sub = ledger.add_subparsers(dest="ledger_command", required=True)
     summary = ledger_sub.add_parser("summary", help="Totals for one month.")
@@ -227,11 +319,18 @@ def main(argv: Sequence[str] | None = None, echo: Callable[[str], None] = print)
     handlers: dict[str, Callable[[argparse.Namespace, Callable[[str], None]], int]] = {
         "classify": command_classify,
         "route": command_route,
+        "validate": command_validate,
         "ledger": command_ledger_summary,
     }
 
     try:
         return handlers[args.command](args, echo)
+    except (ShadowError, VerdictError, RegretError) as exc:
+        # A shadow or verdict file that could not be read or written stops the
+        # run rather than being worked around: a partially readable sample would
+        # silently change the denominator every figure below it is divided by.
+        echo(f"error: {exc}")
+        return EXIT_BAD_CONFIG
     except (ConfigFileError, WorkloadError, LedgerError, RoutingError) as exc:
         echo(f"error: {exc}")
         return EXIT_BAD_CONFIG

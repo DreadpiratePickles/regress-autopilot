@@ -23,6 +23,7 @@ is trivial" are different facts and routing on the wrong one spends real money.
 import json
 from pathlib import Path
 
+from ..parsing import strip_one_fence
 from ..providers.metered import MeteredProvider
 from .features import extract_features
 from .scorer import (
@@ -38,8 +39,6 @@ DEFAULT_PROMPT_PATH = Path(__file__).parent / "prompts" / "classify_v1.md"
 
 REPLY_KEYS = frozenset({"tier", "reason"})
 REQUEST_OPEN_TAG, REQUEST_CLOSE_TAG = "<request>", "</request>"
-FENCE_CHARACTER = "`"
-MIN_FENCE_LENGTH = 3
 CLASSIFIER_TEMPERATURE = 0.0
 
 
@@ -72,25 +71,6 @@ def build_user_message(text: str) -> str:
     return f"{REQUEST_OPEN_TAG}\n{text}\n{REQUEST_CLOSE_TAG}"
 
 
-def _strip_one_fence(text: str) -> str:
-    """Remove a single surrounding markdown fence, if there is one.
-
-    Tolerated because a fence is the one deviation models produce constantly and
-    it changes nothing about the payload. Anything else is a parse failure.
-    """
-    if not text.startswith(FENCE_CHARACTER * MIN_FENCE_LENGTH):
-        return text
-    opening, _, remainder = text.partition("\n")
-    fence = opening[: len(opening) - len(opening.lstrip(FENCE_CHARACTER))]
-    language = opening[len(fence) :].strip()
-    if language and language != "json":
-        return text
-    if not remainder.rstrip().endswith(fence):
-        return text
-    closed = remainder.rstrip()
-    return closed[: len(closed) - len(fence)].strip()
-
-
 def parse_reply(raw: object) -> tuple[Tier, str]:
     """Parse the model's reply into a tier and its reason.
 
@@ -104,7 +84,7 @@ def parse_reply(raw: object) -> tuple[Tier, str]:
     if not isinstance(raw, str):
         raise ClassifierParseError(f"classifier reply must be a string, got {type(raw).__name__}")
 
-    candidate = _strip_one_fence(raw.strip()).strip()
+    candidate = strip_one_fence(raw.strip()).strip()
     if not candidate:
         raise ClassifierParseError("classifier returned an empty reply")
 

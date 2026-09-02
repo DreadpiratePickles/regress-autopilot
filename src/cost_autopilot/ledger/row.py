@@ -35,9 +35,18 @@ STATUS_REFUSED = "refused"
 STATUS_FAILED = "failed"
 STATUSES = frozenset({STATUS_OK, STATUS_REFUSED, STATUS_FAILED})
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 """Bumped when a field changes meaning. `ledger summary` refuses a version it
-does not understand rather than adding up columns that may not be comparable."""
+does not understand rather than adding up columns that may not be comparable.
+
+Version 2 added `shadow_sampled`. Version 1 rows are still readable and are read
+as `shadow_sampled: false`, which is not a default standing in for a missing
+value — it is the true value. Phase A kept no shadow sample at all, so every row
+it wrote was unsampled. Refusing those rows would have thrown away a real month's
+spend to record a fact already known."""
+
+READABLE_SCHEMA_VERSIONS = frozenset({1, SCHEMA_VERSION})
+"""Every version this build can read. A version outside this set is refused."""
 
 
 class LedgerRowError(ValueError):
@@ -79,6 +88,13 @@ class LedgerRow:
     """Populated only when `log_text` is enabled in `autopilot.toml`. Off by
     default; see the module docstring."""
 
+    shadow_sampled: bool = field(default=False)
+    """Whether this request's text and answer were kept for stage 03 to validate.
+
+    A flag, not the data: the text still lives only in `shadow/`, never here. It
+    is on the row so a reader of the ledger alone can tell which fraction of the
+    month's cheap routing has evidence behind it and which has none."""
+
     def __post_init__(self) -> None:
         for name in ("request_id", "ts_utc", "team_id", "request_sha256"):
             value = getattr(self, name)
@@ -109,6 +125,12 @@ class LedgerRow:
             raise LedgerRowError("a 'refused' row must cost nothing: no model was called")
         if self.status in (STATUS_REFUSED, STATUS_FAILED) and not self.error_type:
             raise LedgerRowError(f"a {self.status!r} row must name its error_type")
+        if not isinstance(self.shadow_sampled, bool):
+            raise LedgerRowError("shadow_sampled must be a boolean")
+        if self.shadow_sampled and self.status != STATUS_OK:
+            raise LedgerRowError(
+                "only an 'ok' row can be shadow-sampled: there is no answer to validate"
+            )
 
     def to_json_dict(self) -> dict[str, Any]:
         """Plain JSON types only: tuples become lists."""
@@ -137,13 +159,14 @@ def row_from_json_dict(payload: object) -> LedgerRow:
         raise LedgerRowError(f"ledger row has unknown field(s): {', '.join(unknown)}")
 
     version = payload.get("schema_version")
-    if version != SCHEMA_VERSION:
+    if version not in READABLE_SCHEMA_VERSIONS:
         raise LedgerRowError(
-            f"ledger row has schema_version {version!r}; this build understands "
-            f"{SCHEMA_VERSION}. Refusing to total columns that may not be comparable."
+            f"ledger row has schema_version {version!r}; this build reads "
+            f"{sorted(READABLE_SCHEMA_VERSIONS)}. Refusing to total columns that "
+            "may not be comparable."
         )
 
-    required = known - {"schema_version", "currency", "request_text"}
+    required = known - {"schema_version", "currency", "request_text", "shadow_sampled"}
     missing = sorted(required - set(payload))
     if missing:
         raise LedgerRowError(f"ledger row is missing field(s): {', '.join(missing)}")

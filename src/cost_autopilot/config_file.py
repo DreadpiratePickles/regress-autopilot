@@ -25,6 +25,7 @@ from .config import UnknownModelRefError, model_id_for_ref
 from .route.budget import Budgets
 from .route.ladder import Ladder, LadderError, Rung
 from .route.router import RoutePolicy
+from .validate.settings import ValidateSettings, ValidateSettingsError
 
 DEFAULT_CONFIG_PATH = Path("autopilot.toml")
 
@@ -41,7 +42,20 @@ BUDGET_KEYS = frozenset({"default_monthly_cap_micro_usd", "teams"})
 CLASSIFIER_KEYS = frozenset({"t2_min_score", "t3_min_score", "llm_classifier"})
 LEDGER_KEYS = frozenset({"dir", "log_text"})
 RUN_KEYS = frozenset({"min_interval_ms", "temperature"})
-SECTIONS = frozenset({"ladder", "policy", "budgets", "classifier", "ledger", "run"})
+VALIDATE_KEYS = frozenset(
+    {
+        "enabled",
+        "sample_percent",
+        "judge_model_ref",
+        "max_regret",
+        "min_samples",
+        "dir",
+        "shadow_dir",
+    }
+)
+SECTIONS = frozenset(
+    {"ladder", "policy", "budgets", "classifier", "ledger", "run", "validate"}
+)
 
 
 class ConfigFileError(Exception):
@@ -76,8 +90,22 @@ class AutopilotConfig:
     classifier: ClassifierSettings
     ledger: LedgerSettings
     run: RunSettings
+    validate: ValidateSettings
     prices_source: str
     prices_read_utc: str
+
+    def judge_rung(self) -> Rung:
+        """The ladder rung whose tariff prices a judge call.
+
+        Guaranteed to exist: the loader refuses a judge model that is not on the
+        ladder, because its calls could not otherwise be priced.
+        """
+        for rung in self.ladder.rungs:
+            if rung.model_id == self.validate.judge_model_id:
+                return rung
+        raise ConfigFileError(
+            f"the judge model {self.validate.judge_model_id!r} is not on the ladder"
+        )
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -252,14 +280,8 @@ def _build_classifier(table: dict[str, Any], *, path: Path) -> ClassifierSetting
 
 def _build_ledger(table: dict[str, Any], *, path: Path, root: Path) -> LedgerSettings:
     _check_keys(table, LEDGER_KEYS, path=path, where="[ledger]")
-    directory = Path(_str(table, "dir", path=path, where="[ledger]"))
-    if directory.is_absolute():
-        raise ConfigFileError(
-            f"{path}: [ledger] 'dir' must be a path relative to the repository root, "
-            f"got the absolute path {directory}. Committed configuration must be portable."
-        )
     return LedgerSettings(
-        directory=root / directory,
+        directory=_relative_directory(table, "dir", path=path, where="[ledger]", root=root),
         log_text=_bool(table, "log_text", path=path, where="[ledger]"),
     )
 
@@ -275,6 +297,57 @@ def _build_run(table: dict[str, Any], *, path: Path) -> RunSettings:
         min_interval_ms=_int(table, "min_interval_ms", path=path, where="[run]"),
         temperature=float(temperature),
     )
+
+
+def _relative_directory(
+    table: dict[str, Any], key: str, *, path: Path, where: str, root: Path
+) -> Path:
+    directory = Path(_str(table, key, path=path, where=where))
+    if directory.is_absolute():
+        raise ConfigFileError(
+            f"{path}: {where} '{key}' must be a path relative to the repository root, "
+            f"got the absolute path {directory}. Committed configuration must be portable."
+        )
+    return root / directory
+
+
+def _build_validate(
+    table: dict[str, Any], *, path: Path, root: Path, ladder: Ladder
+) -> ValidateSettings:
+    _check_keys(table, VALIDATE_KEYS, path=path, where="[validate]")
+    where = "[validate]"
+
+    model_ref = _str(table, "judge_model_ref", path=path, where=where)
+    try:
+        judge_model_id = model_id_for_ref(model_ref)
+    except UnknownModelRefError as exc:
+        raise ConfigFileError(f"{path}: {where} {exc}") from exc
+    if all(rung.model_id != judge_model_id for rung in ladder.rungs):
+        raise ConfigFileError(
+            f"{path}: {where} 'judge_model_ref' resolves to a model that is not on the "
+            "ladder, so its calls have no price here and the validation overhead could "
+            "not be reported. Point it at a rung's model_ref, or add a rung for it."
+        )
+
+    max_regret = table.get("max_regret")
+    if max_regret is None:
+        raise ConfigFileError(f"{path}: {where} is missing key 'max_regret'")
+
+    try:
+        return ValidateSettings(
+            enabled=_bool(table, "enabled", path=path, where=where),
+            sample_percent=_int(table, "sample_percent", path=path, where=where),
+            judge_model_ref=model_ref,
+            judge_model_id=judge_model_id,
+            max_regret=max_regret,
+            min_samples=_int(table, "min_samples", path=path, where=where, minimum=1),
+            directory=_relative_directory(table, "dir", path=path, where=where, root=root),
+            shadow_directory=_relative_directory(
+                table, "shadow_dir", path=path, where=where, root=root
+            ),
+        )
+    except ValidateSettingsError as exc:
+        raise ConfigFileError(f"{path}: {where} {exc}") from exc
 
 
 def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AutopilotConfig:
@@ -296,13 +369,17 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AutopilotConfig:
         )
 
     ladder_table = _table(document, "ladder", path=path)
+    ladder = _build_ladder(ladder_table, path=path)
     return AutopilotConfig(
-        ladder=_build_ladder(ladder_table, path=path),
+        ladder=ladder,
         policy=_build_policy(_table(document, "policy", path=path), path=path),
         budgets=_build_budgets(_table(document, "budgets", path=path), path=path),
         classifier=_build_classifier(_table(document, "classifier", path=path), path=path),
         ledger=_build_ledger(_table(document, "ledger", path=path), path=path, root=root),
         run=_build_run(_table(document, "run", path=path), path=path),
+        validate=_build_validate(
+            _table(document, "validate", path=path), path=path, root=root, ladder=ladder
+        ),
         prices_source=_str(ladder_table, "prices_source", path=path, where="[ladder]"),
         prices_read_utc=_str(ladder_table, "prices_read_utc", path=path, where="[ladder]"),
     )

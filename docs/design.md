@@ -264,8 +264,19 @@ SDK's model list at runtime.
 
 **What was found.** No 3.6-generation Pro model appears on the published pricing
 page. The Pro entry that does appear is `gemini-3.1-pro-preview`, at $2.00 / $12.00
-per 1M tokens. The runtime check could not be run: this repository has no
-`GEMINI_API_KEY`, and the SDK model list requires one.
+per 1M tokens. The runtime check could not be run when this was written: the
+repository had no `GEMINI_API_KEY`, and the SDK model list requires one.
+
+**Update, 2026-09-02, from the first live run.** A key is now present and all
+three ids were called. **The id is real**: the API answers `429
+RESOURCE_EXHAUSTED`, not `404 NOT_FOUND`, and names the model
+`gemini-3.1-pro` in its quota metric. What it also revealed is that the free tier
+grants this model `limit: 0` requests — it is a paid-only model, so a free-tier
+key can never reach the top rung. The other two ids are real and reachable, at
+free-tier daily limits of 500 (`gemini-3.5-flash-lite`) and 20
+(`gemini-3.6-flash`) requests. The prices are unchanged; what is now known is
+that the top rung needs billing enabled, which is an operational fact worth
+knowing before anyone plans a validation run.
 
 **Decision.** Use `gemini-3.1-pro-preview` as the top rung, with three rungs
 rather than two, and say plainly in `config.py`, `autopilot.toml` and the README
@@ -329,28 +340,309 @@ cost tool:
 - **It does not know whether any answer was good.** No answer is judged, and
   `ledger summary` reports no quality figure. The saving it prints is a saving
   in spend, with the quality question open. That is stage 03's job.
-- **It does not verify the model ids exist.** Nothing has called the API from
-  this repository. A green test run proves the routing logic, not the vendor.
+- **It does not verify the model ids exist.** A green test run proves the routing
+  logic, not the vendor. *(Superseded 2026-09-02: the first live run called all
+  three and they exist — see §9's update. The test suite still proves nothing
+  about the vendor, which is the point of this line.)*
 - **The prices are read, not audited.** They come from the vendor's public page
   on a stated date, and two of the three are promotional.
 - **The classifier is 26/30 against one 30-request file.** That is a weak
   measurement on a small sample that the same process both wrote and labelled.
   It is not an accuracy claim.
 
-## 12. What Phase B and C add
+---
 
-- **Phase B (stage 03).** Persist answers; join them to their workload criteria
-  by `request_sha256`; judge each against its criteria with project 1's judging
-  seam; shadow-re-run a sample on the top rung and judge that too. The output is
-  the first real evidence about whether cheap routing cost anything.
-- **Phase C (stage 04).** Compute **regret** — the share of requests where the
-  routed rung failed a criterion the top rung's shadow answer passed — and
-  attribute it to the specific classifier rule that fired, using the `reasons`
-  already on every row. That turns "routing is too aggressive" into "the
-  `words_medium` band is sending 60-word debugging requests to the middle rung",
-  which is a change somebody can make. A month without enough shadow comparisons
-  reports `INCONCLUSIVE` rather than a number.
+# Phase B — stage 03, `validate`
 
-The ledger schema was designed for this from the start: `reasons`,
-`complexity_score`, `request_sha256` and the counterfactual are all there so that
-Phase B and C are additions rather than a migration.
+Phase A ends with a saving in spend and an open question about quality. This is
+the answer to that question, and the reason the whole tool is worth anything: a
+router that saves 72% by sending everything to the cheapest model is trivial to
+write and impossible to defend. What is hard is knowing what the 72% cost.
+
+---
+
+## 13. Regret, and why it is the number
+
+**Decision.** The headline output of stage 03 is **routing regret**: the fraction
+of *sampled cheap-routed requests whose cheap answer was insufficient*, reported
+with a Wilson 95% interval, broken down by rung and by tier.
+
+**Why not "pass rate".** A pass rate against criteria measures whether the answer
+was good. That is the wrong question. The question a routing decision has to
+answer is *comparative*: would a better model have done better here? A request
+that no model can answer well is not a routing mistake, and counting it as one
+would make regret track task difficulty rather than routing quality. So every
+judgement in this stage is a comparison against a reference answer, and a
+criterion both models fail contributes nothing.
+
+**Why intervals on everything.** Six samples with one regret is a rate of 17%
+and a 95% interval from 3% to 56%. Quoting the 17% alone presents a coin toss as
+a measurement. `wilson_interval` is imported from project 1 rather than
+reimplemented, for the same reason its retry policy is: two projects that compute
+"how sure are we" differently will eventually disagree about the same data.
+
+**Why the *upper* bound decides the verdict.** A tier is called `safe` only when
+the interval's upper bound is below `max_regret`. A point estimate of zero on
+twelve samples has an upper bound around 0.24 and is therefore not safe at a 10%
+threshold. That is the honest reading, and refusing to say "safe" on twelve
+samples is the whole point of using an interval.
+
+**The sharp edge that follows, named rather than smoothed over.** The verdict has
+three states — `safe`, `insufficient evidence`, `regret too high` — checked in
+that order. With `min_samples = 10` and `max_regret = 0.10` there is a band
+between about n = 10 and n = 35 where a tier has *enough* samples to escape
+"insufficient evidence" but not enough for a zero rate to clear the threshold, so
+it reports **"regret too high — consider routing this tier up" while its observed
+regret is zero**. The statement is true (the bound really is above the
+threshold), but it reads as an accusation the data does not support.
+
+This was left as specified rather than silently given a fourth state, because
+three verdicts a reader can hold in their head is worth more than a taxonomy that
+is exactly right. Two things make it survivable: the line immediately above the
+verdict prints the observed count, the rate and the interval, so the distinction
+is visible on screen; and the config file says so at `min_samples`, with the
+arithmetic and the two ways to fix it. Anyone whose deployment lives in that band
+should raise `min_samples` toward 35.
+
+---
+
+## 14. Shadow sampling, and why it is a hash
+
+**Decision.** After a successful completion on any rung *below the top*, the
+router keeps the request, the answer and the workload's criteria in
+`shadow/<YYYY-MM>.jsonl` when `sha256(request_id) mod 100 < sample_percent`.
+
+**Why sample at all.** Validating every request costs about one top-rung call
+plus four judge calls per request — several times the spend the routing saved.
+A tool whose measurement costs more than the thing it measures is a tool nobody
+runs. `sample_percent` is directly a bill, and it is in the config file rather
+than the code so that it is a reviewed number.
+
+**Why a hash and not a random draw.** Three reasons, and the third is the one
+that matters:
+
+1. The same request is always sampled or always skipped, so a re-run of a
+   workload inspects the same requests and two months are comparable.
+2. Nothing has to be stored to remember what was sampled; the decision is
+   recomputable from the id by anyone, forever.
+3. **A random draw could correlate with the outcome.** A draw taken after the
+   model answered — which is where it would naturally sit, since only successful
+   calls are sampled — could favour the calls that went well. Regret computed
+   from a biased sample is worse than no regret figure, because it would be
+   believed. A hash of an id assigned before the call cannot know the outcome.
+
+`sha256` rather than Python's `hash()`: `hash()` is salted per process, so the
+same id would be sampled in one run and skipped in the next.
+
+**Why `bucket < percent` rather than a modulo band.** Raising the rate can only
+*add* requests to the sample; it never swaps one set for another. Two months at
+different rates therefore still overlap on the lower rate's sample.
+
+**Why the top rung is never sampled.** Its reference answer would come from the
+rung that already answered it. There would be nothing to compare.
+
+**Why this is the one place text is stored, and why it is opt-in.** The ledger
+is read by finance people, copied into spreadsheets and kept for years, and
+customer text does not belong in it — that rule from Phase A is unchanged.
+Judging an answer, however, is impossible without the answer and the question.
+So the text lives in exactly one file, for a configured fraction of traffic,
+gitignored, mode `0600`, and behind `[validate] enabled`. Turning it off costs
+the quality measurement and nothing else, and `ledger summary` then reports
+spend with the quality question openly unanswered — which is Phase A's honest
+position, not a degraded one.
+
+The ledger row gained one field, `shadow_sampled`, so a reader of the ledger
+alone can see which fraction of the month has evidence behind it. It is a flag,
+not the data.
+
+---
+
+## 15. Re-answering on the top rung, and what it costs
+
+**Decision.** For every sampled request, call the top rung with the same request
+and the same system prompt at the same temperature, and price it at the top
+rung's tariff.
+
+**Why re-answer rather than reuse the counterfactual.** Phase A's counterfactual
+is *these token counts at the top rung's price* — an arithmetic claim, deliberately
+weaker than "what the request would have cost". It says nothing at all about
+quality. Only an actual top-rung answer can support the statement "a better model
+would have delivered this and the cheap one did not".
+
+**Why the top rung specifically.** It is the model the router chose not to use.
+Regret is defined against the alternative that was declined, not against a
+hypothetical best.
+
+**Why the cost is reported rather than netted off.** Validation is overhead, and
+the honest place for overhead is next to the saving it qualifies, in the same
+units, so a reader can do the subtraction themselves. Hiding it would be exactly
+the accounting mistake this system exists to catch, one level up. `regret.json`
+splits it into reference and judge legs; `ledger summary` prints the total.
+
+**Why the judge must be on the ladder.** `judge_model_ref` is refused at config
+load if it resolves to a model with no rung. A judge call this system could not
+price would make the reported overhead a guess, and a guess in the money column
+is the one thing this system may not produce.
+
+---
+
+## 16. Two judges, because one question is not enough
+
+**Decision.** Every sampled request is judged twice over: against its criteria
+where it has them, and pairwise against the reference answer always. Regret is
+either signal firing.
+
+**Why criteria.** They are specific, auditable, and written by a human before the
+answer existed. "States that the capital of Peru is Lima" is a claim anybody can
+check, and a per-criterion verdict tells you *what* was lost, not just that
+something was. Project 1's `judge_criterion` already implements the delimited
+inputs and the strict `{"passed", "reason"}` parser, so it is imported rather
+than rewritten.
+
+**Why both answers are judged against each criterion.** Judging only the cheap
+answer measures difficulty, not routing. Regret is `cheap failed AND reference
+passed` — the cheap model lost something a better model actually delivered. A
+criterion both models fail is a fact about the criterion.
+
+**Why pairwise as well.** Most real traffic has no criteria attached, and never
+will. Criteria judging alone would make this stage a workload-file feature rather
+than a production measurement. The pairwise question — did routing this cheaper
+cost the user anything — needs nothing but the two answers.
+
+**Why regret is `either`, not `both`.** The two judges answer different questions
+and a failure of either is a real loss. Requiring both to agree would define
+regret as the intersection of two conservative measures, which is a measure that
+almost never fires — which is how a quality metric becomes decorative.
+
+---
+
+## 17. Swapped-order pairwise, and the bias it does and does not catch
+
+**Decision.** The pairwise comparison is run twice, once with the cheap answer as
+A and once with the reference as A, and the two results are folded by a truth
+table. The cheap answer is sufficient only if it wins or ties in both orders.
+A contradiction is `position_bias_detected` and counts as regret.
+
+**Why twice.** A judge asked "is A at least as good as B" does not answer only
+about the answers; part of its verdict is about the slot. Position bias in
+pairwise LLM judging is well documented and is large enough to invent or erase a
+difference on its own. One extra call per pair is the cheapest defence available,
+and it converts a bias that would silently skew every verdict into a flag on the
+specific verdicts it touched.
+
+**The truth table**, where "forward" puts the cheap answer in slot A and
+"reverse" puts the reference there, and "at least as good" includes "equally
+good":
+
+| forward | reverse | reading | verdict |
+|---|---|---|---|
+| true | true | both runs picked slot A; only a tie satisfies both claims | sufficient |
+| true | false | the cheap answer, in both orders | sufficient |
+| false | true | the reference, in both orders | **regret** |
+| false | false | each run picked the *other* slot: the verdict tracked position | **regret**, flagged |
+
+**Why the contradiction counts as regret rather than being discarded.** A
+judgement this system could not read is not evidence that the cheap answer was
+fine. Dropping contradictions would quietly remove the hardest cases from the
+denominator, which is the direction that flatters the result.
+
+**The blind spot, stated rather than glossed.** A judge that *uniformly* favours
+slot A produces `(true, true)`, which is indistinguishable from a genuine tie and
+is read as one. The swap catches contradictions, not a consistent slot
+preference. What would catch that is calibration against a hand-graded sample —
+which stage 03's contract requires of a human before any regret figure from it is
+quoted, and which has not been done.
+
+---
+
+## 18. Why regret is conservative in every direction it can be
+
+Each of these choices makes the reported regret rate the same or higher, never
+lower. That is deliberate: this number exists to stop somebody claiming a saving
+they did not make, so every judgement call goes against the claim.
+
+- A record with **no readable verdict is excluded from `n`**, not counted as a
+  pass. A broken judge shrinks the sample rather than improving the rate.
+- A **parse failure is a judge error**, never `passed=False` and never
+  `passed=True`. Project 1's rule, unchanged.
+- A **pairwise contradiction counts as insufficient**.
+- Regret is **either** signal, not both.
+- The verdict compares `max_regret` against the **Wilson upper bound**, so a low
+  rate on a small sample cannot pass as safe.
+- Below `min_samples` a tier reports **"insufficient evidence"** rather than a
+  rate. Absence of evidence is not evidence of no regret.
+
+The one place it is *not* conservative is the judge itself: the default
+`judge_model_ref` is the cheapest rung, the same family that produced most of the
+answers, and models prefer their own output. That points the wrong way — toward
+under-reporting regret — and is written into `autopilot.toml` next to the setting
+so nobody has to find it here.
+
+---
+
+## 19. What Phase B does not claim
+
+- **The judge is not calibrated.** No human has hand-graded a sample and checked
+  the judge agrees with them. Until that happens, a regret figure is a
+  measurement of what one model thinks of another model's answer, and the stage's
+  Approval section blocks acting on it.
+- **The sample is a sample.** `regret.json` carries `sample_percent` and the
+  month's total cheap-routed count precisely so nobody reads a rate without
+  seeing the fraction it came from.
+- **No live regret figure has been produced.** The first live run reached the
+  cheapest rung 11 times and then exhausted the key's free-tier quota; the top
+  rung has a free-tier limit of zero requests, so no reference answer could be
+  obtained and the month reports no regret figure at all. That is the failure
+  path working — `ledger summary` says "no regret figure" rather than printing a
+  zero — but it is not a measurement, and this document will not present it as
+  one.
+- **Nothing here changes routing.** The summary prints "consider routing this
+  tier up". A human writes the diff.
+
+---
+
+## 20. One thing the live run taught: a `429` is not always transient
+
+The first live run failed 18 of 30 requests with `ProviderTransientError`. The
+diagnosis is worth keeping.
+
+The vendor reports three different situations with the same HTTP status:
+
+- a genuine per-minute rate limit, which retrying does fix;
+- a per-day quota that is exhausted, which retrying does not fix today;
+- **an entitlement the key does not have at all** — `gemini-3.1-pro` returns
+  `429 RESOURCE_EXHAUSTED` with `limit: 0` on the free tier, meaning the model is
+  paid-only and no amount of waiting will ever help.
+
+The error taxonomy inherited from project 1 maps `429` to
+`ProviderTransientError`, so the third case is retried three times with backoff
+and then fallen back into on every single request. The behaviour is correct given
+the information available — the status code genuinely is indistinguishable — and
+the system recorded it honestly: 18 `failed` rows, each naming the full fallback
+chain and the error type, and a summary that reports 12 requests rather than
+pretending 30.
+
+**Not changed, and why.** Parsing the vendor's quota metric out of an error
+message to reclassify `limit: 0` as a config error would put vendor-specific
+string matching inside the error taxonomy, and it would break the moment the
+message wording changes. The honest fix is operational, and it is now written
+down in the stage's failure table: when every request to one rung fails
+transiently, read the quota metric in the vendor's error before assuming the
+model is unhealthy.
+
+---
+
+## 21. What Phase C adds
+
+**Phase C (stage 04).** Attribute regret to a rule. Every ledger row carries the
+`reasons` that chose its rung, and every verdict record carries the request id
+that joins back to it, so regret can be grouped by which classifier rule fired —
+turning "routing is too aggressive" into "the `words_medium` band is sending
+60-word debugging requests to the middle rung", which is a change somebody can
+make. It also renders the month as a report, and emits `INCONCLUSIVE` rather than
+a number when there are too few comparisons.
+
+The schemas were designed for it: `reasons`, `complexity_score`,
+`request_sha256`, `shadow_sampled` and the counterfactual are on the ledger row,
+and `rung_index`, `tier` and the per-criterion verdicts are on the validation
+record, so Phase C is an addition rather than a migration.

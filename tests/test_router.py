@@ -47,6 +47,8 @@ def build_router(
     spend=0,
     ladder=LADDER,
     log_text=False,
+    shadow_enabled=False,
+    shadow_sample_percent=0,
 ):
     factory = FakeProviderFactory(script)
     router = Router(
@@ -58,6 +60,8 @@ def build_router(
         read_spend_micro_usd=lambda team_id, month: spend,
         system_prompt="You are a helpful assistant.",
         log_text=log_text,
+        shadow_enabled=shadow_enabled,
+        shadow_sample_percent=shadow_sample_percent,
     )
     return router, factory
 
@@ -281,3 +285,97 @@ class TestRowContents:
         router, _ = build_router()
         supplied = router.route(text=TRIVIAL, team_id="demo", request_id="abc-1").row
         assert supplied.request_id == "abc-1"
+
+
+SAMPLED_ID = "req-3"
+"""sha256 bucket 6, so it is sampled at any sample_percent above 6."""
+
+UNSAMPLED_ID = "req-1"
+"""sha256 bucket 60, so it is skipped at sample_percent 20."""
+
+
+class TestShadowSampling:
+    """Stage 02's only Phase B change: a deterministic sample of cheap answers."""
+
+    def build(self, *, percent=100, enabled=True, script="answer"):
+        return build_router(
+            script=script, shadow_sample_percent=percent, shadow_enabled=enabled
+        )
+
+    def test_a_sampled_cheap_answer_produces_a_shadow_record(self):
+        router, _ = self.build()
+        outcome = router.route(text=TRIVIAL, team_id="demo", request_id=SAMPLED_ID)
+        assert outcome.shadow_record is not None
+        assert outcome.row.shadow_sampled is True
+
+    def test_the_record_carries_the_request_and_the_answer(self):
+        router, _ = self.build()
+        record = router.route(
+            text=TRIVIAL, team_id="demo", request_id=SAMPLED_ID, criteria=("c1", "c2")
+        ).shadow_record
+        assert record.request_text == TRIVIAL
+        assert record.answer_text == "answer"
+        assert record.criteria == ("c1", "c2")
+        assert record.rung_index == 0
+        assert record.chosen_model_id == CHEAP
+
+    def test_a_request_with_no_criteria_records_an_empty_list(self):
+        router, _ = self.build()
+        assert router.route(
+            text=TRIVIAL, team_id="demo", request_id=SAMPLED_ID
+        ).shadow_record.criteria == ()
+
+    def test_the_ledger_row_never_carries_the_text_even_when_sampled(self):
+        router, _ = self.build()
+        row = router.route(text=TRIVIAL, team_id="demo", request_id=SAMPLED_ID).row
+        assert row.request_text is None
+        assert TRIVIAL not in str(row.to_json_dict())
+
+    def test_the_top_rung_is_never_shadow_sampled(self):
+        router, _ = self.build()
+        outcome = router.route(text=COMPLEX, team_id="demo", request_id=SAMPLED_ID)
+        assert outcome.row.chosen_model_id == TOP
+        assert outcome.shadow_record is None
+        assert outcome.row.shadow_sampled is False
+
+    def test_a_fallback_that_lands_on_the_top_rung_is_not_sampled(self):
+        router, _ = self.build(
+            script=[ProviderTransientError("down"), ProviderTransientError("down"), "answer"]
+        )
+        outcome = router.route(text=TRIVIAL, team_id="demo", request_id=SAMPLED_ID)
+        assert outcome.row.chosen_model_id == TOP
+        assert outcome.shadow_record is None
+
+    def test_sampling_is_deterministic_for_the_same_request_id(self):
+        router, _ = build_router(shadow_sample_percent=20, shadow_enabled=True)
+        first = router.route(text=TRIVIAL, team_id="demo", request_id=UNSAMPLED_ID)
+        second = router.route(text=TRIVIAL, team_id="demo", request_id=UNSAMPLED_ID)
+        assert first.shadow_record is None and second.shadow_record is None
+
+    def test_an_unsampled_request_records_nothing_and_says_so_on_the_row(self):
+        router, _ = build_router(shadow_sample_percent=20, shadow_enabled=True)
+        outcome = router.route(text=TRIVIAL, team_id="demo", request_id=UNSAMPLED_ID)
+        assert outcome.shadow_record is None
+        assert outcome.row.shadow_sampled is False
+
+    def test_disabling_validation_stops_every_shadow_record(self):
+        router, _ = self.build(enabled=False)
+        outcome = router.route(text=TRIVIAL, team_id="demo", request_id=SAMPLED_ID)
+        assert outcome.shadow_record is None
+        assert outcome.row.shadow_sampled is False
+
+    def test_a_refused_request_produces_no_shadow_record(self):
+        router, _ = build_router(
+            budgets=Budgets(default_monthly_cap_micro_usd=0, teams={}),
+            shadow_sample_percent=100,
+            shadow_enabled=True,
+        )
+        outcome = router.route(text=TRIVIAL, team_id="demo", request_id=SAMPLED_ID)
+        assert outcome.status == STATUS_REFUSED
+        assert outcome.shadow_record is None
+
+    def test_a_failed_request_produces_no_shadow_record(self):
+        router, _ = self.build(script=ProviderTransientError("down"))
+        outcome = router.route(text=TRIVIAL, team_id="demo", request_id=SAMPLED_ID)
+        assert outcome.status == STATUS_FAILED
+        assert outcome.shadow_record is None

@@ -129,3 +129,61 @@ min_interval_ms = 0
 
 # Zero so a re-run of the same workload is as comparable as the provider allows.
 temperature = 0.0
+
+[validate]
+# Stage 03. Routing to a cheaper model only saves money if the cheap answer was
+# good enough, so a deterministic sample of cheap answers is re-answered on the
+# top rung and both answers are judged. The output is regret: the share of
+# sampled cheap answers that were not good enough, with a 95% interval.
+#
+# Keep a shadow sample at all. THIS IS THE ONE SETTING THAT STORES REQUEST TEXT.
+# Sampled requests and their answers are written to `shadow/<YYYY-MM>.jsonl`,
+# which is gitignored and mode 0600; the ledger stays text-free either way.
+# Setting this to false costs the quality measurement and nothing else, and a
+# deployment handling data it may not retain should do exactly that — and then
+# read `ledger summary` knowing it reports spend with the quality question open.
+enabled = true
+
+# Percentage of cheap-routed requests to keep, 0-100. Sampling is
+# `sha256(request_id) mod 100 < sample_percent`, so the same request is always
+# sampled or always skipped and raising the number can only add requests to the
+# sample. Validation costs roughly one top-rung call plus four judge calls per
+# sampled request, so this number is directly a bill: 20 means the quality
+# measurement costs about a fifth of what validating everything would.
+sample_percent = 20
+
+# Which model judges. Named by reference, like a ladder rung, so no model id
+# appears in this file. It must resolve to a model that is on the ladder above,
+# because a judge with no price here could not have its cost reported.
+#
+# CAVEAT worth stating plainly: the default points at the cheapest rung, which is
+# the same model family that produced most of the answers being judged. Models
+# are known to prefer their own output, so this judge's verdicts are the weaker
+# kind of evidence. Point it at a different family if one is available, and read
+# the calibration requirement in stages/03_validate/CONTEXT.md before quoting any
+# regret figure from it.
+judge_model_ref = "CHEAP_MODEL_ID"
+
+# The regret rate above which a tier is called too aggressive, 0.0-1.0. Compared
+# against the Wilson *upper* bound, never the point estimate, so a low rate on
+# five samples cannot pass as safe.
+max_regret = 0.10
+
+# Below this many validated records a tier reports "insufficient evidence"
+# instead of a rate. A number computed from four samples is a number about four
+# samples.
+#
+# SHARP EDGE, because it will surprise somebody: 10 is not enough samples to ever
+# reach "safe" at max_regret = 0.10. Even with zero regret observed, the 95%
+# upper bound only falls below 0.10 at roughly n = 35. Between min_samples and
+# that point a tier reports "regret too high" while its observed rate is zero —
+# which is literally true (the bound is above the threshold) but reads as an
+# accusation. The rate and the bound are both printed on the line above, so the
+# distinction is visible; raise min_samples toward 35, or raise max_regret, if
+# you would rather the verdict said "not enough evidence" for that whole range.
+min_samples = 10
+
+# Both relative to this file, and both gitignored: per-deployment operational
+# data, not source.
+dir = "validate"
+shadow_dir = "shadow"

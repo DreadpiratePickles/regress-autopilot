@@ -27,6 +27,8 @@ from ..classify.scorer import Classification, ScorerThresholds, Tier, classify_t
 from ..ledger.row import STATUS_FAILED, STATUS_OK, STATUS_REFUSED, LedgerRow, text_sha256
 from ..ledger.store import month_key, utc_timestamp
 from ..providers.metered import Completion, MeteredProvider, ProviderError, ProviderTransientError
+from ..validate.sampling import is_sampled
+from ..validate.shadow import ShadowRecord
 from .budget import BudgetExceededError, Budgets, check_budget
 from .ladder import Ladder, LadderError
 
@@ -70,6 +72,13 @@ class RouteOutcome:
     row: LedgerRow
     completion: Completion | None
     classification: Classification
+    shadow_record: ShadowRecord | None = None
+    """Present only when this request was drawn into the validation sample.
+
+    Returned rather than written here for the same reason the ledger row is: the
+    router decides, the caller persists. A shadow write that failed inside
+    `route` would take a routing decision down with it, and the ledger row is the
+    record that must survive."""
 
     @property
     def status(self) -> str:
@@ -89,6 +98,11 @@ class Router:
     system_prompt: str
     log_text: bool = False
     temperature: float = DEFAULT_TEMPERATURE
+    shadow_enabled: bool = False
+    """Whether cheap answers may be kept for stage 03. Off here by default so a
+    router built without `[validate]` in mind stores no request text at all."""
+
+    shadow_sample_percent: int = 0
 
     def start_index_for(self, tier: Tier) -> int:
         """The first rung to try: the later of the capability floor and the policy floor.
@@ -117,6 +131,7 @@ class Router:
         team_id: str,
         moment: datetime | None = None,
         request_id: str | None = None,
+        criteria: tuple[str, ...] = (),
     ) -> RouteOutcome:
         """Route one request and return the outcome, always with a ledger row.
 
@@ -124,6 +139,10 @@ class Router:
         ladder are both recorded outcomes, because the ledger has to see them.
         `RoutingError` and classification errors still propagate — those are
         broken configuration or unusable input, not results.
+
+        `criteria` are the workload's pass criteria for this request. They play
+        no part in routing — the classifier must not be able to see the answer —
+        and are only copied onto a shadow record if one is made.
         """
         classification = classify_text(text, self.thresholds)
         identity = _RequestIdentity(
@@ -131,6 +150,7 @@ class Router:
             ts_utc=utc_timestamp(moment),
             team_id=team_id,
             text=text,
+            criteria=criteria,
         )
 
         try:
@@ -193,6 +213,7 @@ class Router:
             input_tokens=completion.input_tokens,
             output_tokens=completion.output_tokens,
         )
+        record = self._shadow_record(identity, classification, rung_index, completion)
         row = self._row(
             identity,
             classification,
@@ -205,8 +226,51 @@ class Router:
             latency_ms=completion.latency_ms,
             status=STATUS_OK,
             error_type=None,
+            shadow_sampled=record is not None,
         )
-        return RouteOutcome(row=row, completion=completion, classification=classification)
+        return RouteOutcome(
+            row=row,
+            completion=completion,
+            classification=classification,
+            shadow_record=record,
+        )
+
+    def _shadow_record(
+        self,
+        identity: "_RequestIdentity",
+        classification: Classification,
+        rung_index: int,
+        completion: Completion,
+    ) -> ShadowRecord | None:
+        """Keep this answer for stage 03, or decide not to. The only text this
+        system persists passes through here.
+
+        Three gates, all of which must open: validation is enabled at all, the
+        answer did not come from the top rung, and the request id falls in the
+        sample. The top-rung exclusion is not an optimisation — a reference
+        answer for a top-rung request would come from the rung that already
+        answered it, so there would be nothing to compare.
+        """
+        if not self.shadow_enabled or self.shadow_sample_percent <= 0:
+            return None
+        if rung_index >= self.ladder.top_rung.index:
+            return None
+        if not is_sampled(identity.request_id, self.shadow_sample_percent):
+            return None
+        return ShadowRecord(
+            request_id=identity.request_id,
+            ts_utc=identity.ts_utc,
+            team_id=identity.team_id,
+            tier=classification.tier.value,
+            complexity_score=classification.complexity_score,
+            chosen_model_id=completion.model_id,
+            rung_index=rung_index,
+            request_text=identity.text,
+            answer_text=completion.text,
+            criteria=identity.criteria,
+            input_tokens=completion.input_tokens,
+            output_tokens=completion.output_tokens,
+        )
 
     def _refusal(
         self,
@@ -265,6 +329,7 @@ class Router:
         latency_ms: int,
         status: str,
         error_type: str | None,
+        shadow_sampled: bool = False,
     ) -> LedgerRow:
         return LedgerRow(
             request_id=identity.request_id,
@@ -284,6 +349,7 @@ class Router:
             error_type=error_type,
             request_sha256=text_sha256(identity.text),
             request_text=identity.text if self.log_text else None,
+            shadow_sampled=shadow_sampled,
         )
 
 
@@ -295,3 +361,4 @@ class _RequestIdentity:
     ts_utc: str
     team_id: str
     text: str
+    criteria: tuple[str, ...] = ()

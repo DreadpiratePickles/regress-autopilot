@@ -52,6 +52,15 @@ log_text = false
 [run]
 min_interval_ms = 0
 temperature = 0.0
+
+[validate]
+enabled = true
+sample_percent = 20
+judge_model_ref = "CHEAP_MODEL_ID"
+max_regret = 0.10
+min_samples = 10
+dir = "validate"
+shadow_dir = "shadow"
 """
 
 
@@ -226,6 +235,93 @@ class TestOtherValidation:
             load_config(write(tmp_path, text))
 
 
+class TestValidateSection:
+    """`[validate]` decides what is sampled, judged, and called safe."""
+
+    def test_it_loads_with_its_defaults(self, tmp_path):
+        settings = load_config(write(tmp_path, VALID)).validate
+        assert settings.enabled is True
+        assert settings.sample_percent == 20
+        assert settings.min_samples == 10
+        assert settings.max_regret == pytest.approx(0.10)
+
+    def test_the_judge_model_ref_resolves_to_a_model_id(self, tmp_path):
+        settings = load_config(write(tmp_path, VALID)).validate
+        assert settings.judge_model_id
+        assert settings.judge_model_ref == "CHEAP_MODEL_ID"
+
+    def test_the_judge_rung_is_the_ladder_rung_that_prices_the_judge(self, tmp_path):
+        config = load_config(write(tmp_path, VALID))
+        assert config.judge_rung().model_id == config.validate.judge_model_id
+
+    def test_the_directories_resolve_relative_to_the_config_file(self, tmp_path):
+        settings = load_config(write(tmp_path, VALID)).validate
+        assert settings.directory == tmp_path / "validate"
+        assert settings.shadow_directory == tmp_path / "shadow"
+
+    @pytest.mark.parametrize("value", ["-1", "101", "1000"])
+    def test_a_sample_percent_outside_zero_to_one_hundred_is_rejected(self, tmp_path, value):
+        text = VALID.replace("sample_percent = 20", f"sample_percent = {value}")
+        with pytest.raises(ConfigFileError):
+            load_config(write(tmp_path, text))
+
+    @pytest.mark.parametrize("value", ["0", "100"])
+    def test_the_ends_of_the_sample_range_are_allowed(self, tmp_path, value):
+        text = VALID.replace("sample_percent = 20", f"sample_percent = {value}")
+        assert load_config(write(tmp_path, text)).validate.sample_percent == int(value)
+
+    def test_a_fractional_sample_percent_is_rejected(self, tmp_path):
+        text = VALID.replace("sample_percent = 20", "sample_percent = 20.5")
+        with pytest.raises(ConfigFileError):
+            load_config(write(tmp_path, text))
+
+    @pytest.mark.parametrize("value", ["-0.1", "1.5", '"0.1"'])
+    def test_a_max_regret_outside_zero_to_one_is_rejected(self, tmp_path, value):
+        text = VALID.replace("max_regret = 0.10", f"max_regret = {value}")
+        with pytest.raises(ConfigFileError):
+            load_config(write(tmp_path, text))
+
+    def test_a_zero_min_samples_is_rejected(self, tmp_path):
+        text = VALID.replace("min_samples = 10", "min_samples = 0")
+        with pytest.raises(ConfigFileError):
+            load_config(write(tmp_path, text))
+
+    def test_an_unknown_key_is_rejected(self, tmp_path):
+        text = VALID.replace("min_samples = 10", "min_samples = 10\nsample_rate = 5")
+        with pytest.raises(ConfigFileError):
+            load_config(write(tmp_path, text))
+
+    def test_a_missing_validate_section_is_rejected(self, tmp_path):
+        text = VALID.split("[validate]")[0]
+        with pytest.raises(ConfigFileError):
+            load_config(write(tmp_path, text))
+
+    def test_an_unknown_judge_model_ref_is_rejected(self, tmp_path):
+        text = VALID.replace(
+            'judge_model_ref = "CHEAP_MODEL_ID"', 'judge_model_ref = "NOT_A_MODEL_REF"'
+        )
+        with pytest.raises(ConfigFileError):
+            load_config(write(tmp_path, text))
+
+    def test_a_judge_model_not_on_the_ladder_cannot_be_priced_and_is_rejected(self, tmp_path):
+        two_rungs = VALID.replace(
+            """[[ladder.rung]]
+model_ref = "TOP_MODEL_ID"
+input_price_micro_usd_per_1k_tokens = 2000
+output_price_micro_usd_per_1k_tokens = 12000
+max_tier = "T3_COMPLEX"
+""",
+            "",
+        ).replace('judge_model_ref = "CHEAP_MODEL_ID"', 'judge_model_ref = "TOP_MODEL_ID"')
+        with pytest.raises(ConfigFileError, match="ladder"):
+            load_config(write(tmp_path, two_rungs))
+
+    def test_an_absolute_shadow_dir_is_rejected(self, tmp_path):
+        text = VALID.replace('shadow_dir = "shadow"', 'shadow_dir = "/tmp/shadow"')
+        with pytest.raises(ConfigFileError):
+            load_config(write(tmp_path, text))
+
+
 class TestTheCommittedConfig:
     """The file the repository actually ships must load and be self-consistent."""
 
@@ -248,3 +344,53 @@ class TestTheCommittedConfig:
 
     def test_request_text_is_not_logged_by_default(self):
         assert load_config("autopilot.toml").ledger.log_text is False
+
+
+class TestValidateSettingsDirectly:
+    """The settings object rejects on its own, not only through the file loader."""
+
+    def valid(self, **overrides):
+        from pathlib import Path
+
+        from cost_autopilot.validate.settings import ValidateSettings
+
+        return ValidateSettings(
+            **{
+                "enabled": True,
+                "sample_percent": 20,
+                "judge_model_ref": "CHEAP_MODEL_ID",
+                "judge_model_id": "model-cheap",
+                "max_regret": 0.1,
+                "min_samples": 10,
+                "directory": Path("validate"),
+                "shadow_directory": Path("shadow"),
+                **overrides,
+            }
+        )
+
+    def test_a_valid_set_of_settings_builds(self):
+        assert self.valid().sample_percent == 20
+
+    def test_enabled_must_be_a_boolean(self):
+        with pytest.raises(ValueError):
+            self.valid(enabled="yes")
+
+    def test_max_regret_must_be_a_number(self):
+        with pytest.raises(ValueError):
+            self.valid(max_regret="0.1")
+
+    def test_max_regret_true_is_not_a_number_here(self):
+        with pytest.raises(ValueError):
+            self.valid(max_regret=True)
+
+    def test_min_samples_must_be_a_positive_integer(self):
+        with pytest.raises(ValueError):
+            self.valid(min_samples=0)
+
+    def test_a_blank_judge_model_id_is_refused(self):
+        with pytest.raises(ValueError):
+            self.valid(judge_model_id="  ")
+
+    def test_a_sample_percent_out_of_range_is_refused(self):
+        with pytest.raises(ValueError):
+            self.valid(sample_percent=101)
