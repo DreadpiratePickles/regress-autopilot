@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+# Anchored to the repository root on purpose. An unanchored `ledger/` also
+# matches `src/cost_autopilot/ledger/`, which would silently leave the ledger
+# source package out of every commit.
+/ledger/
+/runs/
+.DS_Store
+.coverage

@@ -1,0 +1,131 @@
+# Configuration for the LLM cost autopilot.
+#
+# Everything here has a consequence for money: which models may be called, what
+# they cost, how much a team may spend, and where the line between tiers sits.
+# None of it is a literal in the routing code, so changing any of it is a diff
+# somebody reviews rather than a code change somebody notices later.
+#
+# Model identifiers are deliberately absent. A rung names a `model_ref`, which
+# is the name of an environment variable defined in
+# `src/cost_autopilot/config.py`. That module resolves it to a model id, using
+# the environment if it is set and its own default otherwise. Committed
+# configuration therefore contains no vendor strings, and a deployment can point
+# a rung at a different model without editing this file.
+#
+# Secrets are absent for the same reason. Set GEMINI_API_KEY in a .env file at
+# the repository root; it is gitignored and never appears in a log, an error
+# message, or a ledger row.
+
+[ladder]
+# Whether the prices below were read from the vendor's published pricing page,
+# or are placeholders nobody has checked. `ledger summary` prints a warning on
+# every total when this is false, because a spend figure computed from unchecked
+# prices is a number nobody should quote.
+prices_verified = true
+prices_source = "https://ai.google.dev/gemini-api/docs/pricing"
+prices_read_utc = "2026-09-02"
+
+# Prices are integer micro-USD per 1,000 tokens. One micro-USD is a millionth of
+# a dollar. A price quoted per 1M tokens converts by dividing by 1,000:
+# $0.30 per 1M tokens is 300 micro-USD per 1k tokens.
+#
+# CAVEAT recorded at the time of reading: the Flash and Flash-Lite rungs are on
+# promotional pricing that the vendor's page says rises on 2027-01-01. Re-read
+# the page and update these numbers before trusting any spend figure dated after
+# that, and set `prices_verified = false` in the meantime if in doubt.
+#
+# Rungs are ordered cheapest first, and their `max_tier` ceilings must never
+# decrease going down this list. Both are checked when the file loads.
+
+[[ladder.rung]]
+# Rung 0 — the cheapest published text model. $0.30 / $2.50 per 1M tokens.
+model_ref = "CHEAP_MODEL_ID"
+input_price_micro_usd_per_1k_tokens = 300
+output_price_micro_usd_per_1k_tokens = 2500
+max_tier = "T1_TRIVIAL"
+
+[[ladder.rung]]
+# Rung 1 — the workhorse. $0.75 / $3.75 per 1M tokens (promotional).
+model_ref = "MID_MODEL_ID"
+input_price_micro_usd_per_1k_tokens = 750
+output_price_micro_usd_per_1k_tokens = 3750
+max_tier = "T2_STANDARD"
+
+[[ladder.rung]]
+# Rung 2 — the reasoning model, the last fallback, and the baseline every
+# ledger row's counterfactual cost is measured against. $2.00 / $12.00 per 1M.
+#
+# This rung resolves to a Pro *preview* model. See the note in
+# `src/cost_autopilot/config.py`: no 3.6-generation Pro model appears on the
+# published pricing page, and the SDK model list could not be queried without an
+# API key, so nothing here claims the id was verified at runtime. If a call to
+# this rung returns a 404, change the constant in config.py and this price
+# together, in one commit.
+model_ref = "TOP_MODEL_ID"
+input_price_micro_usd_per_1k_tokens = 2000
+output_price_micro_usd_per_1k_tokens = 12000
+max_tier = "T3_COMPLEX"
+
+[policy]
+# The lowest rung index the router will *start* at for each tier, on top of the
+# ladder's own capability rule. The effective start is the later of the two, so
+# raising a number here skips cheap rungs the ladder would otherwise allow, but
+# lowering one can never send a tier to a rung whose ceiling is below it.
+#
+# All zero means "always start as cheap as the ladder permits", which is the
+# whole point of the tool. Raise T3 to 2 if you find the middle rung is not
+# worth trying for hard requests.
+T1_TRIVIAL = 0
+T2_STANDARD = 0
+T3_COMPLEX = 0
+
+[budgets]
+# Monthly caps in integer micro-USD. 2_000_000 micro-USD is $2.00.
+#
+# The check is `spend >= cap`, evaluated before any model is called, against the
+# ledger for the current UTC month. At exactly the cap a team is refused: the cap
+# is the most it may spend. Because the cost of a pending request cannot be known
+# before the model answers, the last permitted request may carry the total
+# slightly past the cap — a cap is a floor on refusals, not a hard ceiling.
+default_monthly_cap_micro_usd = 2000000
+
+[budgets.teams]
+# A team not listed here is held to the default above.
+demo = 5000000
+support = 1000000
+
+[classifier]
+# Inclusive lower bounds on the 0-100 complexity score. A score of exactly
+# `t2_min_score` is T2. The weights that produce the score live in
+# `src/cost_autopilot/classify/scorer.py`; these two numbers are where the
+# boundaries between tiers sit, which is the part worth arguing about.
+t2_min_score = 15
+t3_min_score = 45
+
+# Ask the cheapest model to classify the request instead of trusting the rules.
+# Off by default and it should stay off unless you have a reason: it spends a
+# model call on every request, on a tool whose purpose is to not spend model
+# calls, and it replaces an explanation anybody can check with one nobody can.
+llm_classifier = false
+
+[ledger]
+# Relative to this file. Gitignored: a ledger is per-deployment operational data,
+# not source.
+dir = "ledger"
+
+# Store the full request text on every row. Off by default. A ledger is read by
+# finance and operations people, copied into spreadsheets, and kept for years;
+# customer text does not belong in it. Rows always carry a SHA-256 of the text,
+# which is enough to prove two rows refer to the same request.
+log_text = false
+
+[run]
+# Minimum gap between consecutive model calls in a batch, in milliseconds.
+# Provider quotas are usually per minute and bounded retries cannot ride out a
+# window that long, so a burst is paced rather than half of it coming back as
+# rate-limit errors. Zero disables pacing; the CLI's --min-interval-ms overrides
+# this for one run.
+min_interval_ms = 0
+
+# Zero so a re-run of the same workload is as comparable as the provider allows.
+temperature = 0.0

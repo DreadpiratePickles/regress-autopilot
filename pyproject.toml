@@ -1,0 +1,49 @@
+[project]
+name = "cost_autopilot"
+version = "0.1.0"
+description = "Route each LLM request to the cheapest model likely to answer it well, under a budget."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Project 1 supplies the provider seam (Provider protocol, GeminiProvider,
+    # FakeProvider, the typed error hierarchy) and the pacing helper. Pinned to a
+    # commit, not a branch: a routing decision recorded in the ledger is only
+    # reproducible if the code that made it is.
+    "regression-detect @ git+https://github.com/DreadpiratePickles/model-regression-detection@5c1fa8b",
+    # Declared directly rather than leaned on as a transitive dependency of
+    # regression-detect: `providers/gemini_metered.py` imports the SDK itself to
+    # read `usage_metadata`, so this package depends on it.
+    "google-genai>=1.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# Required because `regression-detect` is a direct git reference rather than a
+# PyPI release. Project 1 is not published; pinning its commit is the only way
+# to make this package's dependency set reproducible.
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cost_autopilot"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
