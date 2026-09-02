@@ -57,7 +57,8 @@ class ValidationContext:
     reference_temperature: float = field(default=0.0)
     pacer: Callable[[], None] | None = field(default=None)
     """Called before every model call. Provider quotas are per minute and one
-    record costs up to five calls, so a batch has to be spread out."""
+    record costs `1 + 2 x criteria + 2` calls — 9 for a 3-criterion request, 3
+    for one with no criteria — so a batch has to be spread out."""
 
 
 def _meters(context: ValidationContext) -> tuple[CostMeter, CostMeter]:

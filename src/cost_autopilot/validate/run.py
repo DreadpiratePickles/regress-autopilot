@@ -37,9 +37,11 @@ something in it failed, which for this stage means a judge call did."""
 class _Pacer:
     """Spread every model call in the run, not every record.
 
-    One record costs up to five calls, so pacing per record would let a burst of
-    five hit a per-minute quota together and come back as rate-limit errors that
-    are honestly recorded and useless.
+    One record costs `1 + 2 x criteria + 2` calls — one reference answer, each
+    criterion judged on both answers, and the pair judged in both orders — so 9
+    for a 3-criterion request and 3 for one with no criteria. Pacing per record
+    would let a burst that size hit a per-minute quota together and come back as
+    rate-limit errors that are honestly recorded and useless.
     """
 
     def __init__(self, interval_ms: int) -> None:
