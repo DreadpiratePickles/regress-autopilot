@@ -1,0 +1,51 @@
+LIVE — produced by a real run, and it did not complete. Routed against
+gemini-3.5-flash-lite with gemini-3.6-flash as the top rung, using
+autopilot.demo.toml and workloads/demo_quota_v1.jsonl, on 2026-09-02. 4 of 12
+requests were answered; the other 8 exhausted the free tier's 20-requests-per-day
+allowance on gemini-3.6-flash and are recorded as failed. No reference answer
+could be obtained, so the month has NO regret figure — that is the failure path
+working, not a measurement. Everything below this banner is verbatim output of:
+
+    uv run python scripts/autopilot.py --config autopilot.demo.toml ledger summary
+
+This banner is the only thing added by hand.
+
+--------------------------------------------------------------------------------
+
+Ledger summary for 2026-09
+
+  requests           12
+  spend              $0.000267
+  if all top rung    $0.000474
+  saving             $0.000207 (43%)
+  tokens             243 in / 77 out
+  fallbacks          6
+  refusals           0
+  failures           8
+
+  spend by team:
+    demo  $0.000267
+
+  spend by model:
+    gemini-3.5-flash-lite  $0.000267
+
+  requests by tier:
+    T1_TRIVIAL   5
+    T2_STANDARD  5
+    T3_COMPLEX   2
+
+  requests by status:
+    failed  8
+    ok      4
+
+  Quality (from shadow validation)
+
+    sample_percent     50
+    cheap-routed       4 successful request(s) below the top rung
+    shadow-sampled     2
+    validated          2
+
+    No validated samples produced a readable verdict, so this month has
+    no regret figure. Absence of evidence is not evidence of no regret.
+    judge errors       2
+    validation cost    $0.000000

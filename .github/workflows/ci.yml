@@ -1,0 +1,103 @@
+# Continuous integration for the LLM cost autopilot.
+#
+# One job, no secrets, no spend. Every model call in this workflow is served by
+# the in-memory fakes behind `--dry-run`, which are substituted at the provider
+# factory — the single seam every call passes through — so there is no path by
+# which this workflow can reach a vendor or need a key.
+#
+# What it proves, in order: the code lints, the tests pass, and the four stages
+# still wire together end to end. The last part matters because the unit tests
+# exercise each stage in isolation; only a pipeline run catches a stage-02 field
+# that stage 04 stopped reading.
+#
+# Nothing here names a model, a price or a threshold. Models live in
+# `src/cost_autopilot/config.py`; everything a request costs lives in
+# `autopilot.toml`.
+#
+# Action versions are pinned to commit SHAs rather than tags, matching project 1:
+# a tag can be moved, and a workflow that runs different code from one week to
+# the next is not a check.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: lint, tests, offline pipeline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Tests
+        run: uv run pytest -q
+
+      # Stage 02 with canned providers. Exits 0 only if all 30 requests routed;
+      # a non-zero exit here means the pipeline broke, not that a model misbehaved.
+      - name: Route the demo workload offline
+        env:
+          GEMINI_API_KEY: ""
+        run: |
+          uv run python scripts/autopilot.py route \
+            --workload workloads/mixed_v1.jsonl --team ci \
+            --dry-run --min-interval-ms 0
+
+      # Stage 03. Exit 1 means a judge call failed, which cannot happen with the
+      # fakes; anything non-zero is a real breakage.
+      - name: Validate the shadow sample offline
+        env:
+          GEMINI_API_KEY: ""
+        run: |
+          uv run python scripts/autopilot.py validate --dry-run --min-interval-ms 0
+
+      # Stage 04 calls no model in either mode; `--dry-run` here means "label the
+      # artifacts synthetic", which they are, since the two steps above produced
+      # their inputs from fakes.
+      #
+      # The exit code is a VERDICT, not a health check: 0 safe, 1 regret over the
+      # threshold, 2 inconclusive, 3 could not run. A dry run's verdicts are
+      # constants, so 0, 1 and 2 are all meaningless here and only 3 says the tool
+      # is broken. That is the one this step fails on — the same shape as project
+      # 1's offline dry-run step.
+      - name: Report the month offline
+        env:
+          GEMINI_API_KEY: ""
+        run: |
+          set +e
+          uv run python scripts/autopilot.py report --dry-run
+          code=$?
+          set -e
+          echo "report --dry-run exited ${code}"
+          if [ "${code}" -eq 3 ]; then
+            echo "::error::The offline report could not run at all (exit 3)."
+            exit 1
+          fi
+
+      # A committed artifact that lost its banner would be a synthetic number
+      # presented as a measurement, which is the failure this project exists to
+      # avoid. Cheap to check, so it is checked.
+      - name: The committed examples still say what they are
+        run: |
+          set -euo pipefail
+          head -1 docs/examples/report.synthetic.md   | grep -q "SYNTHETIC"
+          head -1 docs/examples/proposal.synthetic.md | grep -q "SYNTHETIC"
+          head -1 docs/examples/summary.synthetic.txt | grep -q "SYNTHETIC"
+          head -1 docs/examples/report.live.md        | grep -q "LIVE"
+          head -1 docs/examples/proposal.live.md      | grep -q "LIVE"
+          head -1 docs/examples/summary.live.txt      | grep -q "LIVE"

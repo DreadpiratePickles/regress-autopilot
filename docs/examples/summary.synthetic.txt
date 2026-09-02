@@ -1,0 +1,61 @@
+SYNTHETIC — produced by a dry run. Every verdict below is a canned constant from an
+in-memory fake, not a model judgement, and every cost comes from fixed synthetic
+token counts. These numbers exercise the arithmetic and the pipeline; they measure
+nothing. Everything below this banner is verbatim output of:
+
+    uv run python scripts/autopilot.py ledger summary
+
+run on 2026-09-02 after 'route --workload workloads/mixed_v1.jsonl --team demo
+--dry-run' and 'validate --dry-run', against the committed autopilot.toml. This
+banner is the only thing added by hand; ledger summary writes plain text and has
+no banner of its own.
+
+--------------------------------------------------------------------------------
+
+Ledger summary for 2026-09
+
+  requests           30
+  spend              $0.010461
+  if all top rung    $0.024000
+  saving             $0.013539 (56%)
+  tokens             3000 in / 1500 out
+  fallbacks          0
+  refusals           0
+  failures           0
+
+  spend by team:
+    demo  $0.010461
+
+  spend by model:
+    gemini-3.1-pro-preview  $0.005600
+    gemini-3.5-flash-lite   $0.001705
+    gemini-3.6-flash        $0.003156
+
+  requests by tier:
+    T1_TRIVIAL   11
+    T2_STANDARD  12
+    T3_COMPLEX   7
+
+  requests by status:
+    ok  30
+
+  Quality (from shadow validation)
+
+    sample_percent     20
+    cheap-routed       23 successful request(s) below the top rung
+    shadow-sampled     5
+    validated          5
+    overall regret     0 of 5 (0%)  95% CI [0.000, 0.434]
+    position bias      0
+    judge errors       0
+    validation cost    $0.010510 (reference $0.004000 + judge $0.006510)
+
+    regret by rung:
+    rung 0  n=4    regret 0 (0%)  95% CI [0.000, 0.490]
+    rung 1  n=1    regret 0 (0%)  95% CI [0.000, 0.793]
+
+    regret by tier:
+    T1_TRIVIAL   n=4    regret 0 (0%)  95% CI [0.000, 0.490]
+      insufficient evidence: 4 validated sample(s), fewer than min_samples 10
+    T2_STANDARD  n=1    regret 0 (0%)  95% CI [0.000, 0.793]
+      insufficient evidence: 1 validated sample(s), fewer than min_samples 10
