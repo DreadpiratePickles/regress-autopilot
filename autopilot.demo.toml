@@ -1,0 +1,127 @@
+# Configuration for the QUOTA-FIT LIVE DEMO. Not the configuration to run.
+#
+# `autopilot.toml` is the real one. This file exists for a single purpose: to
+# make one end-to-end live run — route, validate, report — fit inside what a free
+# Gemini API key can actually do in a day. Two facts from the Phase B live run on
+# 2026-09-02 shape every number below:
+#
+#   * `gemini-3.1-pro-preview` answers `429 RESOURCE_EXHAUSTED` with `limit: 0` on
+#     a free-tier key. It is paid-only. A free key can NEVER reach it, so it is
+#     not on this ladder at all.
+#   * `gemini-3.6-flash` has a free-tier limit of 20 requests per day, and
+#     `gemini-3.5-flash-lite` 500 per day. Both reset at midnight US/Pacific.
+#
+# So the demo ladder is two rungs, the dear one is Flash, and the whole run is
+# budgeted against that 20/day: at most 12 Flash calls, worst case. The arithmetic
+# is in `docs/runbook-live-demo.md`, and every command it lists passes
+# `--config autopilot.demo.toml`.
+#
+# WHAT THIS CONFIGURATION IS NOT GOOD FOR. Its `min_samples = 4` cannot support a
+# `safe` verdict at any sensible `max_regret`; it exists so the demo prints a
+# verdict line at all rather than "insufficient evidence" twelve times. Read the
+# note at that setting before quoting any number produced with this file.
+
+[ladder]
+# Same source and reading date as autopilot.toml. Only the top rung differs,
+# because the three-rung ladder's top rung is unreachable on a free-tier key.
+prices_verified = true
+prices_source = "https://ai.google.dev/gemini-api/docs/pricing"
+prices_read_utc = "2026-09-02"
+
+[[ladder.rung]]
+# Rung 0 — $0.30 / $2.50 per 1M tokens. Free-tier limit: 500 requests/day.
+#
+# Its ceiling is T2_STANDARD rather than T1_TRIVIAL, unlike the real ladder. That
+# is the demo's one deliberate distortion, and it is what makes the demo work at
+# all: with a T1-only ceiling every T2 request would start on the top rung, and a
+# top-rung answer is never shadow-sampled, so there would be nothing to validate.
+model_ref = "CHEAP_MODEL_ID"
+input_price_micro_usd_per_1k_tokens = 300
+output_price_micro_usd_per_1k_tokens = 2500
+max_tier = "T2_STANDARD"
+
+[[ladder.rung]]
+# Rung 1 — $0.75 / $3.75 per 1M tokens (promotional). Free-tier limit: 20/day.
+#
+# The top rung here, so it is both the fallback of last resort and the model
+# every counterfactual and every reference answer is measured against. A saving
+# figure from this file is therefore measured against Flash, not against Pro, and
+# is NOT comparable to one from autopilot.toml.
+model_ref = "MID_MODEL_ID"
+input_price_micro_usd_per_1k_tokens = 750
+output_price_micro_usd_per_1k_tokens = 3750
+max_tier = "T3_COMPLEX"
+
+[policy]
+# All zero: start as cheap as the ladder allows. T1 and T2 therefore start on
+# rung 0 and are eligible for shadow sampling; T3 starts on rung 1, which is the
+# top rung and is never sampled — by design, since its reference answer would
+# come from the rung that already answered it.
+T1_TRIVIAL = 0
+T2_STANDARD = 0
+T3_COMPLEX = 0
+
+[budgets]
+# $2.00. The whole demo costs a few hundred micro-USD; the cap is here so the
+# budget check has something real to read, not because it is expected to bite.
+default_monthly_cap_micro_usd = 2000000
+
+[budgets.teams]
+demo = 5000000
+
+[classifier]
+# Unchanged from autopilot.toml on purpose. The demo workload was written against
+# these boundaries and all 12 of its requests classify to their hand-assigned
+# tier; moving either number here would invalidate that.
+t2_min_score = 15
+t3_min_score = 45
+llm_classifier = false
+
+[ledger]
+# Everything the demo writes lives under `demo/`, so a demo run can never be
+# confused with, or overwrite, a real month's ledger. `/demo/` is gitignored.
+dir = "demo/ledger"
+log_text = false
+
+[run]
+# 6500 ms is 60000 / ~9 requests per minute, the pacing project 1 settled on for
+# this free tier. It is in the file rather than only on the command line so the
+# demo is paced correctly even if somebody forgets the flag.
+min_interval_ms = 6500
+temperature = 0.0
+
+[validate]
+enabled = true
+
+# 50%, not the real file's 20%. With only 10 cheap-routed requests in the demo
+# workload, 20% would give 2 comparisons and no verdict worth printing. 50% gives
+# about 5 — and, because sampling is `sha256(request_id) mod 100 < 50` on a uuid4
+# id, the actual number varies run to run between 0 and 10. The call budget in
+# `docs/runbook-live-demo.md` is computed against the worst case of 10.
+sample_percent = 50
+
+# The cheapest rung judges, same caveat as the real file: it is the same family
+# that produced the answers, and models prefer their own output, so this points
+# toward UNDER-reporting regret.
+judge_model_ref = "CHEAP_MODEL_ID"
+
+max_regret = 0.10
+
+# DEMO ONLY, AND NOT DEFENSIBLE AS A SETTING. Four samples is far too few to
+# support any claim: even with zero regret observed, the 95% upper bound at n = 4
+# is about 0.49, so a tier can never read `safe` at max_regret = 0.10 — it will
+# read "no regret observed (n=…); interval too wide — need ~31 more clean
+# samples", which is the fourth verdict doing exactly its job. The number is 4
+# rather than the real file's 10 only so that the demo escapes "insufficient
+# evidence" and prints a line with real arithmetic behind it. Never copy this
+# value into a configuration that anybody acts on.
+min_samples = 4
+
+dir = "demo/validate"
+shadow_dir = "demo/shadow"
+
+[report]
+dir = "demo/report"
+# Four, to match min_samples above, and for the same demo-only reason.
+min_comparisons = 4
+max_fallback_rate = 0.20

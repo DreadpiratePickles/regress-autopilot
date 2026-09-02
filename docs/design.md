@@ -634,15 +634,252 @@ model is unhealthy.
 
 ## 21. What Phase C adds
 
-**Phase C (stage 04).** Attribute regret to a rule. Every ledger row carries the
-`reasons` that chose its rung, and every verdict record carries the request id
-that joins back to it, so regret can be grouped by which classifier rule fired —
-turning "routing is too aggressive" into "the `words_medium` band is sending
-60-word debugging requests to the middle rung", which is a change somebody can
-make. It also renders the month as a report, and emits `INCONCLUSIVE` rather than
-a number when there are too few comparisons.
+**Phase C (stage 04).** Render the month, recommend what to change, and write the
+change as a diff a human has to sign. It emits `INCONCLUSIVE` rather than a
+number when there are too few comparisons.
 
 The schemas were designed for it: `reasons`, `complexity_score`,
 `request_sha256`, `shadow_sampled` and the counterfactual are on the ledger row,
 and `rung_index`, `tier` and the per-criterion verdicts are on the validation
 record, so Phase C is an addition rather than a migration.
+
+---
+
+# Phase C — stage 04, `report`
+
+Phase B ends with a regret rate, an interval and a sentence per tier printed to a
+terminal. That is a measurement without a decision attached to it. This is the
+decision — and, more importantly, the *shape* of the decision: what a machine may
+work out on its own, and where a person has to put their name.
+
+---
+
+## 22. Proposals, not auto-tuning
+
+**Decision.** Stage 04 computes the exact `autopilot.toml` diff its rules
+recommend, writes it to `report/<month>/proposal.md` and `proposal.json` marked
+`status: awaiting_human_approval`, and stops. A separate command,
+`apply-proposal --file <path> --approve --approved-by <name>`, applies it and
+writes the approver and the timestamp back into the proposal file. `report`
+itself cannot write to `autopilot.toml` under any flag.
+
+**Why not just apply it.** Three reasons, and the first is the rule:
+
+1. **The rulebook: humans approve anything that spends.** Every change this
+   stage can propose changes what the next month costs. Raising a policy floor
+   sends a whole tier to a dearer rung; raising `sample_percent` buys more
+   validation calls. Neither is a formatting preference.
+2. **It would be a system grading its own work and then acting on the grade.**
+   Stage 03's contract already forbids acting on an uncalibrated judge's output.
+   The regret figure driving these recommendations comes from a judge in the same
+   model family as the answers it judged, which points toward *under*-reporting
+   regret. Closing the loop would let that bias silently reshape the routing —
+   and the ledger rows that would show it are the same rows the loop produced.
+3. **A control loop with a month-long period and no damping is not a control
+   loop.** Regret is measured on a sample of a month; a change applied on that
+   evidence is measured on the *next* month's sample. Two noisy measurements a
+   month apart, with the actuator changing what the second one measures, is a
+   system that oscillates. A human in the loop is not a bottleneck here — it is
+   the only damping there is.
+
+**Why the applier's surface is two keys.** `apply-proposal` can change `[policy]
+<TIER>` and `[validate] sample_percent`, both integers, and refuses anything
+else. A general TOML writer that could touch a budget, a price or a model
+reference would be a far larger blast radius than the evidence supports. The
+refusal names what it may change and tells the reader to make the rest by hand.
+
+**Why the edit is line-based rather than a TOML round-trip.** `tomllib` reads
+TOML and writes nothing, and every writer available round-trips through a data
+structure, which strips comments. Half the value of `autopilot.toml` is its
+comments — the caveat at `judge_model_ref`, the sharp edge at `min_samples`, the
+promo-pricing warning. So one scalar on one line is replaced in place, trailing
+comment preserved, and the result is re-loaded through `load_config` before it
+replaces the original. A test asserts that applying a real proposal changes
+exactly one line of the committed file and leaves the comment count identical.
+
+**Why the proposal records the value it was built against.** Between generating a
+proposal and approving it, somebody may edit the file. `apply-proposal` compares
+each key's live value against the `current_value` in the proposal and refuses on
+a mismatch, naming both. Silently overwriting the change somebody just made would
+be the worst possible behaviour for a tool whose whole pitch is auditability.
+
+---
+
+## 23. The fourth verdict
+
+**Decision.** `tier_verdict_line` gained a fourth state: **"no regret observed
+(n=…); interval too wide — need ~N more clean samples"**, checked after `safe`
+and `insufficient evidence` and before `regret too high`. It fires when the
+observed regret count is zero and the Wilson upper bound is still at or above
+`max_regret`. `N` is computed by `clean_samples_needed(max_regret)` — the
+smallest `n` whose upper bound at zero successes clears the threshold — minus the
+tier's current `n`.
+
+**Why this is a reversal, and what changed.** §13 named this exact band and left
+it alone on purpose: "three verdicts a reader can hold in their head is worth
+more than a taxonomy that is exactly right". That argument was about a line in a
+terminal, next to the rate and the interval, read by the person who just ran the
+command.
+
+Phase C changes the audience. The same sentence now appears in `report.md`, a
+document that gets committed, pasted into a chat and read months later by
+somebody who did not run anything. In that context "regret too high — consider
+routing this tier up", printed over an observed rate of **zero**, is not a
+survivable rough edge. It is a document accusing a routing decision of a fault
+the data does not support, and the fix it recommends — spend more money on a
+dearer rung — is the expensive direction to be wrong in.
+
+**Why the shortfall is computed rather than written down.** `n ≈ 35` is only true
+for `max_regret = 0.10`. A deployment at 0.20 needs 16; one at 0.05 needs 73. A
+constant in the message would be wrong for every deployment but one, so the
+number is derived from the same `wilson_interval` the verdicts use, by a doubling
+search then a bisection — about thirty evaluations. `max_regret = 0.0` is a legal
+setting that no sample size satisfies, and the function returns `None` for it
+rather than looping; the message then says so instead of quoting an impossible
+count.
+
+**Why it maps to INCONCLUSIVE at month scale rather than becoming a fourth
+verdict there too.** A month's report answers "is this routing defensible". "The
+sample is too small to tell" is not a finding about the routing, and giving it
+its own top-level word would make the exit-code contract four-valued for no gain.
+So the fourth *tier* state rolls up into `INCONCLUSIVE`, with the shortfall in
+the reason string.
+
+**Why the wording lives in one function.** `tier_verdict_state` decides which of
+the four applies; `tier_verdict_line` writes the sentence; both `ledger summary`
+and `report.md` render that sentence verbatim, and stage 04's rules branch on the
+state rather than matching English. A reader who sees the same evidence worded
+two ways learns to trust neither.
+
+---
+
+## 24. Recommendations are one rule per verdict state
+
+**Decision.** The recommendation rules are keyed to the four verdict states, so
+at most one routing rule can fire per tier and they cannot contradict each other:
+
+| Tier verdict | Rule | Proposes |
+|---|---|---|
+| `regret too high` | `raise_policy_floor` | `[policy] <TIER>` one rung up |
+| `insufficient evidence` | `raise_sample_percent` | `[validate] sample_percent` |
+| `no regret observed …` | `raise_sample_percent` | `[validate] sample_percent` |
+| `safe`, with a floor above the ladder's own | `lower_policy_floor` | `[policy] <TIER>` one rung down |
+
+Three operational rules sit outside that table: `enable_billing` when requests
+exhausted the ladder, `high_fallback_rate` when a tier keeps paying twice, and
+`verify_prices` when `prices_verified` is false. None of the three proposes a
+configuration change, because none of them is a configuration problem.
+
+**Why "regret observed" and "no regret observed" get different rules.** They are
+different problems with different fixes and opposite costs. Observed regret means
+the cheap rung really did lose something a better model delivered — the fix is
+routing, and it costs more per request forever. Zero regret on a wide interval
+means nothing is known yet — the fix is evidence, and it costs a handful of judge
+calls once. Recommending the expensive fix for the cheap problem is exactly what
+the fourth verdict exists to prevent, and the rule table is where that prevention
+is enforced rather than merely worded.
+
+**Why the sampling recommendation quotes two numbers.** "Raise `sample_percent`"
+alone is not actionable. It says *to what* — the rate at which this month's own
+cheap-routed traffic for that tier would have produced the target `n` — and *how
+long otherwise*, as the number of requests the current rate would need. Both are
+integers a reader can check against the ledger.
+
+**Why `lower_policy_floor` carries a caveat in its own text.** A safe tier whose
+floor sits above the ladder's own floor has money on the table, and saying so is
+useful. But the regret was measured *at the current rung*, and moving down
+changes the thing that was measured. The recommendation says that, in the
+recommendation, rather than in a document nobody will open.
+
+**Why a fallback only counts as routing evidence when a dearer rung answered.**
+The first version counted every request whose `fallback_chain` had more than one
+entry, and on the real Phase-B ledger it recommended routing T2 to the Pro rung —
+because eleven T2 requests had climbed the whole ladder and got nothing, on a key
+with no entitlement to the top rung. That is a reachability problem, and the
+recommendation would have spent more money on calls nobody could serve. So the
+rule counts only `status: ok` rows that fell back, and the exhausted ones go to
+`enable_billing` instead. The report prints both counts, on adjacent lines,
+because they lead to different actions.
+
+**Why there is no `[report] max_regret`.** The stub contract asked for one. Two
+thresholds for one concept is precisely how a report starts disagreeing with the
+command that fed it — the same argument this stage already applies to *reading*
+regret rather than recomputing it — so the verdict is decided against `[validate]
+max_regret`, and `[report]` holds only what is genuinely its own:
+`min_comparisons` (the month-wide twin of `min_samples`), `max_fallback_rate` and
+`dir`. The whole section is optional with documented defaults, because it arrived
+a phase after the file's shape was fixed and a Phase-B configuration is still a
+valid configuration.
+
+---
+
+## 25. The demo is shaped by the quota, not the other way round
+
+**The problem.** A tool nobody can watch run is a tool nobody believes. But on a
+free-tier key the production ladder cannot complete a single validation: its top
+rung is `gemini-3.1-pro-preview`, which answers `429` with `limit: 0` — paid-only
+— so no reference answer can ever be obtained, and §19's honest position stands
+that no live regret figure exists.
+
+**Decision.** `autopilot.demo.toml`: a two-rung ladder, Flash-Lite → Flash, with
+Flash as the top rung, plus `workloads/demo_quota_v1.jsonl` — 12 requests, 5 T1,
+5 T2, 2 T3, three criteria each — sized so the whole run fits in **12 calls to
+Flash against a 20-per-day allowance**, worst case. The budget is computed in
+`docs/runbook-live-demo.md` and asserted in `tests/test_demo_config.py`, because a
+runbook whose arithmetic has gone stale will make somebody burn a day's quota on
+its word.
+
+**Why the cheap rung's ceiling is raised to `T2_STANDARD`.** This is the demo's
+one deliberate distortion of the real ladder and it is what makes the demo work
+at all. With rung 0 capped at T1, every T2 request would start on the top rung —
+and a top-rung answer is never shadow-sampled, because its reference answer would
+come from the rung that already answered it. Ten of the twelve requests would
+then have nothing to validate.
+
+**Why `min_samples = 4`, and why the file shouts about it.** Four is indefensible
+as a setting: the 95% upper bound at n = 4 with zero regret is about 0.49, so a
+tier can never read `safe` at `max_regret = 0.10`. It exists so the demo escapes
+"insufficient evidence" and prints the *fourth* verdict — with real arithmetic
+behind it — rather than the same non-answer twelve times. The config file says
+this at the setting, in full, and the runbook repeats it.
+
+**Why the demo writes to `demo/`.** Separate ledger, shadow, validate and report
+directories, so a demo run can never be mistaken for or overwrite a real month.
+Its saving is measured against Flash rather than Pro and is not comparable to a
+figure from `autopilot.toml`; the report's provenance block now names the
+configuration and the ladder for exactly this reason.
+
+**What happened when it was run, 2026-09-02.** It did not complete, and the
+committed artifacts say so on their first line. The key's 20 daily Flash requests
+had already gone to the Phase B run, so `route` recorded **4 `ok` and 8
+`failed`**, `validate` produced two verdict records with no verdict — each
+carrying `429 RESOURCE_EXHAUSTED` verbatim — and `report` exited 2,
+`INCONCLUSIVE`, recommending billing. Nothing was invented and no failure decayed
+into a success. The full log is in the runbook's §6, and the artifacts are in
+`docs/examples/*.live.*`.
+
+**Why the failed attempt is committed rather than deleted.** It is the best
+evidence in this repository that the failure paths work. A report that says "0
+comparisons produced a readable verdict" over a month with a 43% saving is
+exactly the output this system exists to produce when it does not know something.
+
+---
+
+## 26. What Phase C does not claim
+
+- **The recommendations rest on an uncalibrated judge.** Stage 03's Approval
+  section blocks quoting a regret figure until a human has hand-graded a sample,
+  and rendering that figure as a Markdown table does not lift the block. Every
+  recommendation that reads a regret rate inherits it.
+- **No proposal has been applied to the committed `autopilot.toml`.** The
+  mechanism is implemented and tested end to end, including every refusal; the
+  file in this repository has not been tuned by it.
+- **No live regret figure exists, still.** Both live runs — Phase B's and Phase
+  C's demo — ended with zero readable verdicts, for the same reason. Everything
+  in `docs/examples/*.synthetic.*` is canned constants from an in-memory fake and
+  says so on its first line.
+- **The report publishes nothing.** There is no Slack sender, no PR comment, no
+  webhook. It writes four files into a gitignored directory and prints to stdout.
+- **`report.md` is not a dashboard.** It has no history, no month-over-month
+  comparison and no trend. Each month is rendered from its own two files and
+  nothing else.

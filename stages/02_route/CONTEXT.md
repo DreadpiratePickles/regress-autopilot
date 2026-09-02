@@ -88,7 +88,7 @@ Every step is deterministic code except step 5, which is the only call out.
 
 ## Verify
 
-- `uv run pytest -q` — 625 tests, none touching the network. The paths that
+- `uv run pytest -q` — 776 tests, none touching the network. The paths that
   matter here are covered directly: rung choice per tier, the policy floor being
   unable to defeat the capability floor, refusal at exactly the cap, transient
   failure stepping up one rung and succeeding, exhaustion recording

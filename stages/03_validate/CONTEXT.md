@@ -90,7 +90,7 @@ text-free whether validation is on or off.
 
 ## Verify
 
-- `uv run pytest -q` — 625 tests, none touching the network. The paths that
+- `uv run pytest -q` — 776 tests, none touching the network. The paths that
   matter here are covered directly: deterministic sampling (same id, same
   decision; the rate over 1,000 synthetic ids); a shadow record written only for
   a successful non-top-rung answer and only when `enabled`; request text never

@@ -53,9 +53,21 @@ VALIDATE_KEYS = frozenset(
         "shadow_dir",
     }
 )
+REPORT_KEYS = frozenset({"dir", "min_comparisons", "max_fallback_rate"})
 SECTIONS = frozenset(
-    {"ladder", "policy", "budgets", "classifier", "ledger", "run", "validate"}
+    {"ladder", "policy", "budgets", "classifier", "ledger", "run", "validate", "report"}
 )
+
+DEFAULT_REPORT_DIR = "report"
+DEFAULT_MIN_COMPARISONS = 10
+DEFAULT_MAX_FALLBACK_RATE = 0.20
+"""Defaults for an absent `[report]` section.
+
+The section is optional, unlike every other one, because stage 04 was added a
+phase after the file's shape was fixed and a configuration written for Phase B
+is still a valid configuration. Every other section stays required: a missing
+price or budget is a mistake, whereas a missing report threshold has a defensible
+default that is printed in the report it decides."""
 
 
 class ConfigFileError(Exception):
@@ -81,6 +93,22 @@ class ClassifierSettings:
 
 
 @dataclass(frozen=True)
+class ReportSettings:
+    """The `[report]` section: where stage 04 writes, and the two numbers it decides on."""
+
+    directory: Path
+    min_comparisons: int
+    """Fewest validated records with a readable verdict before the month's report
+    may say anything other than INCONCLUSIVE. Distinct from `[validate]
+    min_samples`, which is the same idea applied to one tier."""
+
+    max_fallback_rate: float
+    """Share of successful requests that fell back to a more expensive rung, above
+    which the report recommends raising that tier's policy floor. Falling back is
+    a paid-for retry: past this rate the cheap rung is costing more than it saves."""
+
+
+@dataclass(frozen=True)
 class AutopilotConfig:
     """The whole of `autopilot.toml`, validated and resolved."""
 
@@ -91,6 +119,7 @@ class AutopilotConfig:
     ledger: LedgerSettings
     run: RunSettings
     validate: ValidateSettings
+    report: ReportSettings
     prices_source: str
     prices_read_utc: str
 
@@ -299,6 +328,44 @@ def _build_run(table: dict[str, Any], *, path: Path) -> RunSettings:
     )
 
 
+def _build_report(
+    table: dict[str, Any] | None, *, path: Path, root: Path
+) -> ReportSettings:
+    """Build `[report]`, or its documented defaults when the section is absent."""
+    if table is None:
+        return ReportSettings(
+            directory=root / DEFAULT_REPORT_DIR,
+            min_comparisons=DEFAULT_MIN_COMPARISONS,
+            max_fallback_rate=DEFAULT_MAX_FALLBACK_RATE,
+        )
+
+    where = "[report]"
+    _check_keys(table, REPORT_KEYS, path=path, where=where)
+    rate = table.get("max_fallback_rate", DEFAULT_MAX_FALLBACK_RATE)
+    if isinstance(rate, bool) or not isinstance(rate, int | float):
+        raise ConfigFileError(f"{path}: {where} 'max_fallback_rate' must be a number")
+    if not 0.0 <= float(rate) <= 1.0:
+        raise ConfigFileError(
+            f"{path}: {where} 'max_fallback_rate' must lie in [0.0, 1.0], got {rate}"
+        )
+
+    directory = (
+        _relative_directory(table, "dir", path=path, where=where, root=root)
+        if "dir" in table
+        else root / DEFAULT_REPORT_DIR
+    )
+    min_comparisons = (
+        _int(table, "min_comparisons", path=path, where=where, minimum=1)
+        if "min_comparisons" in table
+        else DEFAULT_MIN_COMPARISONS
+    )
+    return ReportSettings(
+        directory=directory,
+        min_comparisons=min_comparisons,
+        max_fallback_rate=float(rate),
+    )
+
+
 def _relative_directory(
     table: dict[str, Any], key: str, *, path: Path, where: str, root: Path
 ) -> Path:
@@ -379,6 +446,11 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AutopilotConfig:
         run=_build_run(_table(document, "run", path=path), path=path),
         validate=_build_validate(
             _table(document, "validate", path=path), path=path, root=root, ladder=ladder
+        ),
+        report=_build_report(
+            _table(document, "report", path=path) if "report" in document else None,
+            path=path,
+            root=root,
         ),
         prices_source=_str(ladder_table, "prices_source", path=path, where="[ladder]"),
         prices_read_utc=_str(ladder_table, "prices_read_utc", path=path, where="[ladder]"),

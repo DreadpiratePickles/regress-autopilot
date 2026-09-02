@@ -7,6 +7,7 @@ import pytest
 
 from cost_autopilot.cli import EXIT_BAD_CONFIG, EXIT_OK, EXIT_PARTIAL_FAILURE, main
 from cost_autopilot.ledger.store import month_key
+from cost_autopilot.report.model import EXIT_COULD_NOT_RUN, EXIT_INCONCLUSIVE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKLOAD = REPO_ROOT / "workloads" / "mixed_v1.jsonl"
@@ -397,7 +398,12 @@ class TestSummaryQualitySection:
         route_everything(workspace)
         run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
         _, echo = run(workspace, "ledger", "summary")
-        verdicts = ("safe:", "insufficient evidence:", "regret too high —")
+        verdicts = (
+            "safe:",
+            "insufficient evidence:",
+            "no regret observed",
+            "regret too high —",
+        )
         tiers = [line for line in echo.lines if "T1_TRIVIAL" in line or "T2_STANDARD" in line]
         assert tiers, "the quality section must break regret down by tier"
         assert sum(echo.text.count(phrase) for phrase in verdicts) >= 1
@@ -409,3 +415,163 @@ class TestSummaryQualitySection:
         run(workspace, "ledger", "summary")
         after = (workspace / "autopilot.toml").read_text(encoding="utf-8")
         assert after == before.replace("sample_percent = 20", "sample_percent = 100")
+
+
+class TestReportCommand:
+    """Stage 04 through the command line. Nothing here calls a model."""
+
+    def test_a_month_with_no_data_is_inconclusive_and_still_writes_the_artifacts(
+        self, workspace
+    ):
+        code, echo = run(workspace, "report", "--month", "2026-09")
+        assert code == EXIT_INCONCLUSIVE
+        assert "Verdict: INCONCLUSIVE" in echo.text
+        directory = workspace / "report" / "2026-09"
+        for name in ("report.md", "report.json", "proposal.md", "proposal.json"):
+            assert (directory / name).is_file(), name
+
+    def test_it_reports_the_month_a_dry_run_produced(self, workspace):
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        code, echo = run(workspace, "report", "--dry-run")
+        assert code in (EXIT_OK, EXIT_INCONCLUSIVE)
+        assert "Dry run" in echo.text
+        assert "spend" in echo.text
+        assert "saving" in echo.text
+
+    def test_a_dry_run_marks_every_artifact_synthetic_on_its_first_line(self, workspace):
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        run(workspace, "report", "--dry-run")
+        directory = workspace / "report" / month_key()
+        for name in ("report.md", "proposal.md"):
+            first = (directory / name).read_text(encoding="utf-8").splitlines()[0]
+            assert "SYNTHETIC" in first, name
+            assert "not a model judgement" in first, name
+
+    def test_a_real_run_does_not_claim_to_be_synthetic(self, workspace):
+        route_everything(workspace)
+        run(workspace, "report")
+        text = (workspace / "report" / month_key() / "report.md").read_text(encoding="utf-8")
+        assert "SYNTHETIC" not in text
+
+    def test_out_overrides_the_configured_directory(self, workspace):
+        run(workspace, "report", "--month", "2026-09", "--out", str(workspace / "elsewhere"))
+        assert (workspace / "elsewhere" / "2026-09" / "report.md").is_file()
+        assert not (workspace / "report").exists()
+
+    def test_the_report_never_writes_to_the_configuration(self, workspace):
+        route_everything(workspace)
+        before = (workspace / "autopilot.toml").read_text(encoding="utf-8")
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        run(workspace, "report")
+        assert (workspace / "autopilot.toml").read_text(encoding="utf-8") == before
+
+    def test_the_json_and_the_markdown_agree_on_the_verdict(self, workspace):
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        run(workspace, "report")
+        directory = workspace / "report" / month_key()
+        payload = json.loads((directory / "report.json").read_text(encoding="utf-8"))
+        text = (directory / "report.md").read_text(encoding="utf-8")
+        assert f"## Verdict: {payload['verdict']}" in text
+
+    def test_a_bad_month_could_not_run_rather_than_inconclusive(self, workspace):
+        code, echo = run(workspace, "report", "--month", "not-a-month")
+        assert code == EXIT_COULD_NOT_RUN
+        assert "error:" in echo.text
+
+    def test_a_missing_config_could_not_run(self, tmp_path):
+        echo = Recorder()
+        code = main(
+            ["--config", str(tmp_path / "absent.toml"), "report", "--month", "2026-09"],
+            echo=echo,
+        )
+        assert code == EXIT_COULD_NOT_RUN
+
+    def test_the_regret_figures_match_what_ledger_summary_printed(self, workspace):
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        _, summary = run(workspace, "ledger", "summary")
+        run(workspace, "report")
+        text = (workspace / "report" / month_key() / "report.md").read_text(encoding="utf-8")
+        for line in summary.lines:
+            stripped = line.strip()
+            if stripped.startswith(("safe:", "insufficient evidence:", "no regret observed")):
+                assert stripped in text
+
+
+class TestApplyProposalCommand:
+    def _proposal(self, workspace):
+        """A month whose evidence really does recommend a change.
+
+        Routing samples everything so there is something to validate, then the
+        rate is put back to the committed 20% before the report runs — which is
+        what makes the sampling rule fire with a value different from the one in
+        the file, and so gives `apply-proposal` a real diff to refuse or apply.
+        """
+        route_everything(workspace)
+        run(workspace, "validate", "--dry-run", "--min-interval-ms", "0")
+        set_config(workspace, "sample_percent = 100", "sample_percent = 20")
+        run(workspace, "report")
+        path = workspace / "report" / month_key() / "proposal.json"
+        assert json.loads(path.read_text(encoding="utf-8"))["changes"], (
+            "this fixture must produce a non-empty proposal"
+        )
+        return path
+
+    def test_approve_is_required(self, workspace):
+        path = self._proposal(workspace)
+        before = (workspace / "autopilot.toml").read_text(encoding="utf-8")
+        code, echo = run(
+            workspace, "apply-proposal", "--file", str(path), "--approved-by", "Bobby"
+        )
+        assert code == EXIT_BAD_CONFIG
+        assert "without --approve" in echo.text
+        assert (workspace / "autopilot.toml").read_text(encoding="utf-8") == before
+
+    def test_an_approver_is_required_by_the_parser(self, workspace):
+        path = self._proposal(workspace)
+        with pytest.raises(SystemExit):
+            run(workspace, "apply-proposal", "--file", str(path), "--approve")
+
+    def test_approving_changes_the_file_and_records_who(self, workspace):
+        path = self._proposal(workspace)
+        code, echo = run(
+            workspace,
+            "apply-proposal",
+            "--file",
+            str(path),
+            "--approve",
+            "--approved-by",
+            "Bobby Meher",
+        )
+        assert code == EXIT_OK
+        assert "Applied" in echo.text
+        after = json.loads(path.read_text(encoding="utf-8"))
+        assert after["status"] == "applied"
+        assert after["approved_by"] == "Bobby Meher"
+        config = (workspace / "autopilot.toml").read_text(encoding="utf-8")
+        for change in after["changes"]:
+            assert f"{change['key']} = {change['proposed_value']}" in config
+
+    def test_applying_twice_is_refused(self, workspace):
+        path = self._proposal(workspace)
+        args = ("apply-proposal", "--file", str(path), "--approve", "--approved-by", "B")
+        assert run(workspace, *args)[0] == EXIT_OK
+        code, echo = run(workspace, *args)
+        assert code == EXIT_BAD_CONFIG
+        assert "already applied" in echo.text
+
+    def test_a_missing_proposal_file_is_a_named_refusal(self, workspace):
+        code, echo = run(
+            workspace,
+            "apply-proposal",
+            "--file",
+            str(workspace / "nope.json"),
+            "--approve",
+            "--approved-by",
+            "B",
+        )
+        assert code == EXIT_BAD_CONFIG
+        assert "not found" in echo.text

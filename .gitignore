@@ -13,6 +13,21 @@ __pycache__/
 # `shadow/` holds request text and answers; it must never be committed.
 /shadow/
 /validate/
+# Stage 04's runtime output directory, anchored for the same reason as the three
+# above: unanchored, `report/` would also match `src/cost_autopilot/report/` and
+# leave stage 04's source uncommitted. A rendered month is derived data — it can
+# be regenerated from the ledger and the verdicts at any time. The copies worth
+# keeping are the ones under `docs/examples/`, which ARE committed and which
+# carry a banner saying whether they came from a live run or a dry one.
+/report/
+# Everything `autopilot.demo.toml` writes: the quota-fit live demo's own ledger,
+# shadow file, verdicts and report. Separate from the four above so a demo run
+# can never be mistaken for, or overwrite, a real month.
+/demo/
 /runs/
+# The temporary file `apply-proposal` writes and then renames over
+# autopilot.toml. It should never survive a successful or a failed run; it is
+# listed so a crash mid-apply cannot leave a half-edited config staged.
+*.toml.proposed
 .DS_Store
 .coverage

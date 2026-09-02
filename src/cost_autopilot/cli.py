@@ -1,4 +1,5 @@
-"""The command line: `classify`, `route`, `validate`, and `ledger summary`.
+"""The command line: `classify`, `route`, `validate`, `ledger summary`, `report`
+and `apply-proposal`.
 
 The logic lives in the packages this imports; this module only wires arguments
 to it and turns outcomes into exit codes and printed text, so the test suite can
@@ -28,6 +29,9 @@ from .ledger.store import LedgerError, LedgerStore, month_key, validate_month_ke
 from .ledger.summary import render, summarise
 from .providers.fake_metered import FakeProviderFactory
 from .providers.metered import MeteredProvider, ProviderError
+from .report.model import EXIT_COULD_NOT_RUN, ReportError
+from .report.proposal import ProposalError
+from .report.run import run_apply_proposal, run_report
 from .route.router import ProviderFactory, Router, RoutingError
 from .validate.dry_run import DryRunJudgeFactory
 from .validate.regret import RegretError
@@ -246,6 +250,31 @@ def command_ledger_summary(args: argparse.Namespace, echo: Callable[[str], None]
     return EXIT_OK
 
 
+def command_report(args: argparse.Namespace, echo: Callable[[str], None]) -> int:
+    """Render one month as a report, a proposal, and their machine-readable twins."""
+    config = load_config(args.config)
+    month = validate_month_key(args.month) if args.month else month_key()
+    return run_report(
+        config,
+        config_path=args.config,
+        month=month,
+        out_dir=args.out,
+        dry_run=args.dry_run,
+        echo=echo,
+    )
+
+
+def command_apply_proposal(args: argparse.Namespace, echo: Callable[[str], None]) -> int:
+    """Apply an approved tuning proposal. The only command that edits autopilot.toml."""
+    return run_apply_proposal(
+        config_path=args.config,
+        proposal_path=args.file,
+        approve=args.approve,
+        approved_by=args.approved_by,
+        echo=echo,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="autopilot",
@@ -309,6 +338,43 @@ def build_parser() -> argparse.ArgumentParser:
     summary = ledger_sub.add_parser("summary", help="Totals for one month.")
     summary.add_argument("--month", default=None, help="YYYY-MM (default: the current UTC month).")
 
+    report = subparsers.add_parser(
+        "report",
+        help="Render one month: spend, saving, regret, recommendations, proposal.",
+    )
+    report.add_argument("--month", default=None, help="YYYY-MM (default: the current UTC month).")
+    report.add_argument(
+        "--out",
+        default=None,
+        help="Directory to write <month>/ into. Overrides [report] dir.",
+    )
+    report.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Label every artifact as synthetic. This command calls no model either "
+            "way; the flag says the ledger and verdicts it reads came from fakes."
+        ),
+    )
+
+    apply_proposal = subparsers.add_parser(
+        "apply-proposal",
+        help="Apply an approved tuning proposal to autopilot.toml. Needs --approve.",
+    )
+    apply_proposal.add_argument(
+        "--file", required=True, help="Path to a proposal.json written by `report`."
+    )
+    apply_proposal.add_argument(
+        "--approve",
+        action="store_true",
+        help="Required. Without it the command refuses and changes nothing.",
+    )
+    apply_proposal.add_argument(
+        "--approved-by",
+        required=True,
+        help="Required. The person approving; recorded in the proposal file.",
+    )
+
     return parser
 
 
@@ -321,26 +387,42 @@ def main(argv: Sequence[str] | None = None, echo: Callable[[str], None] = print)
         "route": command_route,
         "validate": command_validate,
         "ledger": command_ledger_summary,
+        "report": command_report,
+        "apply-proposal": command_apply_proposal,
     }
+
+    # `report` reserves 2 for INCONCLUSIVE — "the evidence cannot say" — so its
+    # setup failures exit 3 instead, the way project 1 separates a verdict from a
+    # tool that could not produce one. Every other command keeps 2 for "the run
+    # never started", because none of them has a verdict to confuse it with.
+    could_not_run = EXIT_COULD_NOT_RUN if args.command == "report" else EXIT_BAD_CONFIG
 
     try:
         return handlers[args.command](args, echo)
+    except ProposalError as exc:
+        # A refused proposal is a refusal, not a crash: nothing was changed, and
+        # the message says which check said no.
+        echo(f"error: {exc}")
+        return EXIT_BAD_CONFIG
+    except ReportError as exc:
+        echo(f"error: {exc}")
+        return could_not_run
     except (ShadowError, VerdictError, RegretError) as exc:
         # A shadow or verdict file that could not be read or written stops the
         # run rather than being worked around: a partially readable sample would
         # silently change the denominator every figure below it is divided by.
         echo(f"error: {exc}")
-        return EXIT_BAD_CONFIG
+        return could_not_run
     except (ConfigFileError, WorkloadError, LedgerError, RoutingError) as exc:
         echo(f"error: {exc}")
-        return EXIT_BAD_CONFIG
+        return could_not_run
     except ProviderError as exc:
         # A provider that could not even be built (a missing key) stopped the
         # run before anything was recorded, so this is a setup failure, not a
         # routed outcome. Routed provider failures never reach here: they are
         # recorded on a ledger row and reported through the exit code.
         echo(f"error: {exc}")
-        return EXIT_BAD_CONFIG
+        return could_not_run
     except (OSError, ValueError) as exc:
         echo(f"error: {exc}")
-        return EXIT_BAD_CONFIG
+        return could_not_run

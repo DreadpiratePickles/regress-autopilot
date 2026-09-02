@@ -187,3 +187,33 @@ min_samples = 10
 # data, not source.
 dir = "validate"
 shadow_dir = "shadow"
+
+[report]
+# Stage 04. Turns one month of ledger rows and stage 03's verdicts into a report,
+# a set of recommendations, and a tuning proposal that a human must approve.
+#
+# This whole section is optional: leave it out and the three defaults below apply.
+# It is the only optional section in this file, because it was added a phase after
+# the file's shape was fixed and a configuration written for Phase B is still a
+# valid configuration.
+#
+# There is deliberately NO separate regret threshold here. The verdict is decided
+# against `[validate] max_regret` above, so the report and the `validate` command
+# that fed it cannot drift apart — the same reason stage 04 reads regret from
+# `regret.json` instead of recomputing it.
+
+# Where `report <YYYY-MM>/report.md` and its three siblings are written. Relative
+# to this file, and gitignored: a rendered month is derived data, and the copies
+# worth keeping live in `docs/examples/`.
+dir = "report"
+
+# Fewest comparisons with a readable verdict, across the whole month, before the
+# report may say anything other than INCONCLUSIVE. The month-wide twin of
+# `[validate] min_samples`, which does the same job for one tier.
+min_comparisons = 10
+
+# Share of a tier's requests that may need more than one rung before the report
+# recommends starting that tier higher, 0.0-1.0. A fallback is a call that was
+# paid for and produced nothing, so past this rate the cheap rung is costing more
+# than it saves.
+max_fallback_rate = 0.20
