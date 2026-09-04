@@ -1,49 +1,59 @@
-# regress-autopilot
+<div align="center">
 
-**Route every LLM request to the cheapest model that can handle it — and prove the cheap answer was good
-enough.** Composes with [`regress`](https://github.com/DreadpiratePickles/regress), the project before it.
+# 💸 regress-autopilot
+
+### Send every request to the cheapest model that can handle it — then prove the cheap answer was good enough.
+
+**A saving you cannot check is a story. This one is a subtraction, and the price of proving it is printed next to it.**
 
 [![ci](https://github.com/DreadpiratePickles/regress-autopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/DreadpiratePickles/regress-autopilot/actions/workflows/ci.yml)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab)](.python-version)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![tests: 780](https://img.shields.io/badge/tests-780-brightgreen)](tests/)
+[![tests](https://img.shields.io/badge/tests-780%20passing-brightgreen)](tests/)
+[![money](https://img.shields.io/badge/money-integer%20micro--USD-2ea44f)](src/cost_autopilot/money.py)
+[![regret](https://img.shields.io/badge/regret-reported%20with%20a%20CI-8A2BE2)](#-see-the-numbers)
+[![auto-tuning](https://img.shields.io/badge/auto--tuning-asks%20a%20human%20first-orange)](docs/design.md)
+[![prices](https://img.shields.io/badge/prices-verified%202026--09--02-informational)](autopilot.toml)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-This is a cost router with a conscience. It scores each request's complexity with transparent rules, sends
-it to the cheapest rung of a model ladder that can serve it, refuses anything that would break a team's
-monthly budget, and appends one audited line per request to an integer-micro-USD ledger — which also records
-what that request *would* have cost on the best model, so the saving is a subtraction rather than a claim.
+</div>
 
-Then it checks its own homework. A deterministic sample of the cheap answers is re-asked on the top rung and
-both answers are judged against each other, which turns "the cheap model was fine" into **routing regret**:
-the share of sampled cheap answers that were not good enough, with a 95% interval, per rung and per tier.
-Validation costs money too, and that cost is printed next to the saving rather than netted out of it.
+---
 
-## Contents
+Somebody in finance opens the vendor invoice on the second Tuesday of the month, the way they have all year,
+and the LLM line has four figures on it. Nobody chose that number. A year ago an engineer shipped a feature
+against the best model in the account, because that was the safe default and nobody had time to think about
+it per request, and every feature since inherited the choice by copy-paste. The email that comes back down
+to engineering asks a reasonable question — *which of these calls actually needed the expensive model?* —
+and there is no answer to it anywhere in the system, because nothing in the system ever asked.
 
-[The problem](#the-problem-in-20-seconds) · [What it does](#-what-it-does) · [Why it's worth
-using](#-why-its-worth-using) · [See the numbers](#-see-the-numbers) · [How it works](#-how-it-works) ·
-[Install](#-install-5-minutes) · [Use it](#-use-it-a-guided-first-session) · [Quotas, prices and
-models](#-quotas-prices-and-models) · [Configuration](#-configuration-reference) · [FAQ](#-faq) · [Project
-layout](#-project-layout) · [Design principles](#-design-principles) · [Status and
-roadmap](#-status-and-roadmap) · [Learn from this repo](#-learn-from-this-repo) ·
-[Contributing](#contributing) · [License](#license)
-
-## The problem, in 20 seconds
-
-A team ships a feature on the best model in the account, because that is the safe default and nobody has
-time to think about it per request. Six months later the bill is five figures a month, and most of the
-traffic turns out to be "reformat this", "what is the order number in this blurb", "translate this line" —
-work a model costing a twentieth as much would do perfectly.
+Most of that traffic is "reformat this", "what is the order number in this blurb", "translate this line" —
+work a model costing a twentieth as much would do perfectly. Every one went to the top of the ladder because
+measuring is work and defaulting is free. Defaulting is not free. The invoice is just where the bill for it
+turns up, addressed to somebody who did not make the choice.
 
 **Routers already exist**, and they are not hard to write: a hundred lines and a regex will get you most of
 the way. **The hard part is the sentence after.** A router that sends everything to the cheapest model saves
-90% and is indefensible. A router that saves 50% might be excellent or might be quietly shipping worse answers to a
-fifth of your users, and *the router cannot tell you which*, because nothing in it ever looked at an answer.
-The saving lands in a dashboard; the cost lands somewhere nobody is measuring.
+90% and is indefensible. A router that saves 50% might be excellent, or might be quietly shipping worse
+answers to a fifth of your users, and *the router cannot tell you which*, because nothing in it ever looked
+at an answer. So a cost figure without a matching quality figure is half a number.
 
-So a cost figure without a matching quality figure is half a number. This tool's whole reason to exist is
-the other half: **routing regret**, measured on a deterministic sample, reported with a confidence interval,
-with the price of measuring it stated in the same units next to the saving it qualifies.
+**Prior art, credited properly, because I did not invent routing.**
+[RouteLLM](https://github.com/lm-sys/RouteLLM) trains a router on preference data and publishes the
+cost-quality curve it achieves, which is a far more serious answer to *which model* than a weighted sum of
+regexes will ever be. [OpenRouter](https://openrouter.ai/) will fall back across dozens of providers and
+hand you one bill without you writing a line. [Martian](https://withmartian.com/) sells dynamic model
+routing as a product. [LiteLLM](https://github.com/BerriAI/litellm)'s router does cost- and latency-aware
+selection across a hundred providers and is in production in more places than this ever will be. If you
+need routing that works today across many vendors, install one of those. They are better at routing than
+this is, and they had the decency to finish first.
+
+What you get here that you do not get there is the other half of the number:
+
+- **Routing regret** — the share of sampled cheap answers a better model would have improved, with a 95%
+  Wilson interval per rung and per tier, never a bare point estimate.
+- **Integer money** — every amount an `int` of micro-USD, every division rounding up, no float near a total.
+- **Counterfactual cost on every row** — what that request would have cost on the top rung, stored at the
+  time, so the saving stays a subtraction a stranger can redo after the vendor's prices move.
+- **A tuning proposal a human has to sign** — the tool computes the exact config diff and then stops.
 
 ## 🔧 What it does
 
@@ -64,11 +74,8 @@ Five steps. Each one writes a file you can read, keep and check with a calculato
 5. **Propose** — write the exact `autopilot.toml` diff those recommendations imply, marked
    `awaiting_human_approval`, and stop. → `report/<YYYY-MM>/proposal.md`, `proposal.json`
 
-What you get: a saving you can check by subtraction, because every row carries both halves; a regret rate
-with a 95% interval per rung and per tier, and a one-line verdict in one of four wordings rather than a bare
-percentage; the price of the measurement, split into reference and judge legs, next to the saving it
-qualifies; and a tuning diff somebody has to sign. No account, no dashboard, no vendor holding your spend
-history.
+No account, no dashboard, no vendor holding your spend history. The most autonomous thing in here is a file
+that describes a change it is not allowed to make.
 
 ## 💡 Why it's worth using
 
@@ -82,8 +89,8 @@ Twelve samples with zero regret is not `safe`; it is "no regret observed (n=12);
 **A classifier you can argue with.** Tier comes from a weighted sum of measurable features — length bands,
 code fences, stack traces, tables, task verbs from two fixed vocabularies, constraint markers, multi-step
 markers, non-ASCII share — and every term that fires appends a reason carrying its own weight, which sum
-exactly to the score. A ledger row saying `contains a stack trace (+25), reasoning verb(s): debug (+14)` is
-a rule you can point at and fix. `T3_COMPLEX because a model said so` is not.
+exactly to the score. A row saying `contains a stack trace (+25), reasoning verb(s): debug (+14)` is a rule
+you can point at, dispute and fix. `T3_COMPLEX because a model said so` is a rule you can only believe in.
 
 **Integer money, bounded fallback, three outcomes that never blur.** Every amount is an `int` of micro-USD
 with an explicit currency, and every division rounds up, because a million one-token calls must not be free;
@@ -94,22 +101,17 @@ dearer model fixes neither. The budget check is `spend >= cap` against the month
 and a refusal is a recorded row costing zero rather than an exception nobody sees. `ok`, `refused` and
 `failed` never decay into one another, so the row count is the request count, not the success count.
 
-**Proposals need a human.** The tool computes the exact config diff and then stops. Auto-tuning would be a
-system grading its own work and then acting on the grade, on evidence from a judge in the same model family
-as the answers, with a month-long feedback period and no damping. "Humans approve anything that spends" is
-also just good control theory here.
+**Proposals need a human.** Auto-tuning would be a system grading its own work and then acting on the grade,
+on evidence from a judge in the same model family as the answers, with a month-long feedback period and no
+damping. "Humans approve anything that spends" is also just good control theory here. I gave it the
+arithmetic and kept the pen.
 
 **It composes with the project before it.** The provider protocol, the typed error hierarchy, the retry
 policy, the pacing helper, the criterion judge with its strict parser, and `wilson_interval` are imported
 from [project 1](https://github.com/DreadpiratePickles/regress), pinned to commit `5c1fa8b`, rather than
-restated — so the two cannot drift on what counts as a transient failure or on how wide a 95% interval is.
-This project adds the *metered* seam project 1 did not need: `Completion` carries token usage, without
-which a call cannot be priced.
-
-**It is honest about what it has not measured.** The judge is not calibrated, and no live regret figure has
-ever been produced because the free-tier key cannot reach a top rung. Both facts are here, in
-`docs/design.md`, in the stage contracts, and in the config file next to the settings they qualify — because
-a cost tool that over-claims once is a cost tool nobody believes again.
+restated — so the two cannot drift on what counts as a transient failure or how wide a 95% interval is. This
+project adds the *metered* seam project 1 did not need: `Completion` carries token usage, without which a
+call cannot be priced.
 
 ## 📊 See the numbers
 
@@ -146,10 +148,10 @@ From [`summary.synthetic.txt`](docs/examples/summary.synthetic.txt):
 ```
 
 (The three outcome counts are on separate lines in the file; folded here for space.) That block is the whole
-argument of this project. The saving is 56%. The regret is zero — on five
-samples, upper bound 43%, so the report says `insufficient evidence` rather than quoting the zero. And
-proving even that much cost **$0.010510, or 77% of the saving**. A tool that printed only the first block
-would be lying by omission.
+argument of this project. The saving is 56%. The regret is zero — on five samples, upper bound 43%, so the
+report says `insufficient evidence` rather than quoting the zero. And proving even that much cost
+**$0.010510, or 77% of the saving**. I am printing that where you cannot miss it rather than netting it out,
+which is either integrity or a total absence of marketing instinct.
 
 The rendered month is [`report.synthetic.md`](docs/examples/report.synthetic.md); the diff it recommends —
 `sample_percent` 20 → 100, evidence attached — is
@@ -218,7 +220,7 @@ reasoning behind every decision, including the ones made the other way and then 
 
 ## 📦 Install (5 minutes)
 
-### 1. Prerequisites
+### 1. What you need
 
 - **[uv](https://docs.astral.sh/uv/)** — the only thing to install by hand: `curl -LsSf
   https://astral.sh/uv/install.sh | sh` on macOS or Linux.
@@ -322,9 +324,9 @@ reasons:
   - multi-step marker(s): root cause, step by step (+10)
 ```
 
-**The weights sum to the score**, always — 10 + 30 + 25 + 14 + 10 = 89 — and that invariant is a test. If a request routes somewhere you disagree with, this
-tells you which rule to argue with. Vocabularies live in
-[`classify/features.py`](src/cost_autopilot/classify/features.py), weights in
+**The weights sum to the score**, always — 10 + 30 + 25 + 14 + 10 = 89 — and that invariant is a test. If a
+request routes somewhere you disagree with, this tells you exactly which rule to go and argue with.
+Vocabularies live in [`classify/features.py`](src/cost_autopilot/classify/features.py), weights in
 [`classify/scorer.py`](src/cost_autopilot/classify/scorer.py), and the two tier boundaries in
 `[classifier]`, because *where* the boundary sits is the part worth arguing about and it belongs in a file
 somebody reviews.
@@ -351,7 +353,7 @@ rung. Both are on the row, so the saving is always a subtraction somebody else c
 A workload is JSONL — `id`, `text`, and optionally `team_id`, `expected_tier` and 2–4 plain-English
 `criteria`. The **whole file is validated before the first call**, so a typo on line 28 is found while
 nothing has been spent rather than after twenty-seven paid ones. `expected_tier` is never shown to the
-classifier.
+classifier — grading yourself against the answer key is a different project.
 
 ### (c) Read the ledger
 
@@ -418,7 +420,8 @@ behind every line:
 +sample_percent = 100
 ```
 
-Nothing has been changed: deciding whether that diff is right is your job.
+Nothing has been changed. Deciding whether that diff is right is your job, and it is the one job here that
+does not automate.
 
 ### (f) Apply it, with your name on it
 
@@ -656,7 +659,8 @@ exists to catch, one level up.
 **Isn't Gemini judging Gemini biased?** Yes, and it is documented rather than hidden. The default judge is
 the cheapest rung, the same family that produced most of the answers, and models prefer their own output.
 That points toward **under**-reporting regret — the direction that flatters the result — and it is written
-into `autopilot.toml` next to the setting. Point it at another family once you have a second key.
+into `autopilot.toml` next to the setting. Point it at another family once you have a second key. Models,
+like people, reliably think their own work was underrated.
 
 **Why does my tier say "no regret observed … interval too wide"?** Because zero out of twelve is not
 evidence: the 95% upper bound at n = 12 with zero regret is about 0.24, well above a `max_regret` of 0.10.
@@ -678,7 +682,43 @@ written.
 you configure — no telemetry, no account, no backend, no webhook, no Slack sender — and `report` writes a
 proposal marked `awaiting_human_approval` and stops.
 
-## 🗂 Project layout
+## Honest caveats
+
+A cost tool that over-claims once is a cost tool nobody believes again. So, in full:
+
+**No live regret figure has ever been produced. Not one.** Both live runs on 2026-09-02 ended with zero
+readable verdicts, because no reference answer could be obtained. The reason is not subtle: the free tier
+grants the shipped ladder's top rung `limit: 0`, a `429` that no amount of patience turns into an answer.
+Until somebody enables billing, the quality half of this project has been exercised end to end and measured
+never.
+
+**Every regret number you can see in this repository is synthetic**, produced by `--dry-run` against an
+in-memory fake, and every one of them carries a banner saying so on line one of its file. They exercise the
+arithmetic and the plumbing. They measure nothing at all, and I would rather you heard that from me than
+worked it out later.
+
+**The judge is in the same family as the answers.** The default judge is rung 0 — the model that wrote most
+of the cheap answers, asked whether the cheap answers were good. Self-preference points toward
+under-reporting regret, the direction that flatters the result. It is also uncalibrated: no human has
+hand-graded a sample and checked the judge agrees, so a regret figure measures what one model thinks of
+another's answer. I say that with a straight face; the stage contract blocks acting on it until it changes.
+
+**`429` means three different things and the status code will not tell you which.** A per-minute rate limit,
+a per-day quota, and an entitlement the key simply does not have all arrive identically. This tool treats
+all three as transient and falls back, which is correct given the information available and still means a
+run can look unhealthy when it is merely unentitled. Read the vendor's error body.
+
+**A `failed` row is recorded at zero cost, and the vendor may disagree.** Both the refusal and the
+exhausted-ladder paths write `cost_micro_usd = 0`, because no usage block was ever returned to price. If
+your provider bills for attempts that errored, that money exists on their invoice and not in this ledger.
+This file is what the tool observed, not what you were charged.
+
+**The counterfactual is an approximation, in one direction.** It prices *your* token counts at the top
+rung's rates, and the top model would have produced a different number of output tokens for the same prompt.
+So the saving estimates the bill you avoided and says nothing about the answer you got. That is what the
+regret figure is for, when there is one.
+
+## The floor plan
 
 ```
 CONTEXT.md                          router: which stage owns which job
@@ -801,3 +841,10 @@ That is exactly what [CI](.github/workflows/ci.yml) runs, and it needs no API ke
 ## License
 
 [MIT](LICENSE).
+
+---
+
+<div align="center">
+<i>Integer money, a subtraction you can redo, and an interval around every claim.<br>
+The cheap answer still has to be good enough — and somebody had to go and check.</i>
+</div>
