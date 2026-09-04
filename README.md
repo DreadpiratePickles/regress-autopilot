@@ -784,7 +784,7 @@ stages run end to end offline against canned providers.
 | Routing against live models | **Verified.** Two live runs, 2026-09-02: the shipped ladder (12 of 30 answered) and the quota-fit demo (4 of 12 answered). The demo run's artifacts are committed as `docs/examples/*.live.*`; the shipped-ladder run's were not kept |
 | A live **regret figure** | **Never produced.** Both live runs ended with zero readable verdicts, because no reference answer could be obtained. `docs/examples/*.synthetic.*` is canned constants and says so |
 | The top rung, `gemini-3.1-pro-preview` | **Needs billing.** `429` with `limit: 0` on a free-tier key. The id is real; the entitlement is not |
-| CI (`.github/workflows/ci.yml`) | Written, pinned to action SHAs, needs no secret. **Not yet observed green on GitHub** — this repository has not been pushed |
+| CI (`.github/workflows/ci.yml`) | Written, pinned to action SHAs, needs no secret. **Green on GitHub** on every push so far — [run 33868461956](https://github.com/DreadpiratePickles/regress-autopilot/actions/runs/33868461956) was the first (20 s) |
 | Judge calibration | **Not done and not claimed.** No human has hand-graded a sample and checked the judge agrees. Until that happens a regret figure measures what one model thinks of another model's answer, and the stage contract blocks acting on it |
 | `apply-proposal` against the committed config | Mechanism implemented and tested including every refusal; **the committed `autopilot.toml` has not been tuned by it** |
 
