@@ -308,9 +308,9 @@ This is project 1's convention, kept deliberately.
 
 ## 10. Reusing project 1, and why the seam had to be widened
 
-**Decision.** Depend on `regression-detect` pinned to commit `5c1fa8b`, and
-import from it: the `Provider` protocol's typed error hierarchy
-(`ProviderError`, `ProviderConfigError`, `ProviderResponseError`,
+**Decision.** Depend on `regression-detect` (the `regress` repository) pinned
+to commit `5c1fa8b`, and import from it: the `Provider` protocol's typed error
+hierarchy (`ProviderError`, `ProviderConfigError`, `ProviderResponseError`,
 `ProviderTransientError`), the Gemini retry constants (`MAX_ATTEMPTS`,
 `REQUEST_TIMEOUT_MS`, `RETRYABLE_STATUS_CODES`, the backoff bounds), and
 `pacing`.

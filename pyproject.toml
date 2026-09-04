@@ -9,7 +9,7 @@ dependencies = [
     # FakeProvider, the typed error hierarchy) and the pacing helper. Pinned to a
     # commit, not a branch: a routing decision recorded in the ledger is only
     # reproducible if the code that made it is.
-    "regression-detect @ git+https://github.com/DreadpiratePickles/model-regression-detection@5c1fa8b",
+    "regression-detect @ git+https://github.com/DreadpiratePickles/regress@5c1fa8b",
     # Declared directly rather than leaned on as a transitive dependency of
     # regression-detect: `providers/gemini_metered.py` imports the SDK itself to
     # read `usage_metadata`, so this package depends on it.

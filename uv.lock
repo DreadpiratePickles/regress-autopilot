@@ -283,7 +283,7 @@ dev = [
 requires-dist = [
     { name = "google-genai", specifier = ">=1.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "regression-detect", git = "https://github.com/DreadpiratePickles/model-regression-detection?rev=5c1fa8b" },
+    { name = "regression-detect", git = "https://github.com/DreadpiratePickles/regress?rev=5c1fa8b" },
 ]
 
 [package.metadata.requires-dev]
@@ -780,7 +780,7 @@ wheels = [
 [[package]]
 name = "regression-detect"
 version = "0.1.0"
-source = { git = "https://github.com/DreadpiratePickles/model-regression-detection?rev=5c1fa8b#5c1fa8b3c418b7f3a906f788d2a64e9957143143" }
+source = { git = "https://github.com/DreadpiratePickles/regress?rev=5c1fa8b#5c1fa8b3c418b7f3a906f788d2a64e9957143143" }
 dependencies = [
     { name = "google-genai" },
     { name = "httpx" },

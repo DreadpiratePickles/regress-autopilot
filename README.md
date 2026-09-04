@@ -1,9 +1,9 @@
-# llm-cost-autopilot
+# regress-autopilot
 
 **Route every LLM request to the cheapest model that can handle it — and prove the cheap answer was good
-enough.**
+enough.** Composes with [`regress`](https://github.com/DreadpiratePickles/regress), the project before it.
 
-[![ci](https://github.com/DreadpiratePickles/llm-cost-autopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/DreadpiratePickles/llm-cost-autopilot/actions/workflows/ci.yml)
+[![ci](https://github.com/DreadpiratePickles/regress-autopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/DreadpiratePickles/regress-autopilot/actions/workflows/ci.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab)](.python-version)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tests: 780](https://img.shields.io/badge/tests-780-brightgreen)](tests/)
@@ -101,10 +101,10 @@ also just good control theory here.
 
 **It composes with the project before it.** The provider protocol, the typed error hierarchy, the retry
 policy, the pacing helper, the criterion judge with its strict parser, and `wilson_interval` are imported
-from [project 1](https://github.com/DreadpiratePickles/model-regression-detection), pinned to commit
-`5c1fa8b`, rather than restated — so the two cannot drift on what counts as a transient failure or on how
-wide a 95% interval is. This project adds the *metered* seam project 1 did not need: `Completion` carries
-token usage, without which a call cannot be priced.
+from [project 1](https://github.com/DreadpiratePickles/regress), pinned to commit `5c1fa8b`, rather than
+restated — so the two cannot drift on what counts as a transient failure or on how wide a 95% interval is.
+This project adds the *metered* seam project 1 did not need: `Completion` carries token usage, without
+which a call cannot be priced.
 
 **It is honest about what it has not measured.** The judge is not calibrated, and no live regret figure has
 ever been produced because the free-tier key cannot reach a top rung. Both facts are here, in
@@ -230,8 +230,8 @@ reasoning behind every decision, including the ones made the other way and then 
 ### 2. Clone, install, add your key
 
 ```bash
-git clone https://github.com/DreadpiratePickles/llm-cost-autopilot
-cd llm-cost-autopilot
+git clone https://github.com/DreadpiratePickles/regress-autopilot
+cd regress-autopilot
 uv sync
 echo 'GEMINI_API_KEY=your-key-here' > .env
 ```
